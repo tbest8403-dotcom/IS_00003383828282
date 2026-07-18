@@ -1,0 +1,1394 @@
+-- Run as a LocalScript. The existing Shoot remote must perform server validation.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local CurrentCamera = workspace.CurrentCamera
+
+local TargetRadius = 72
+local TargetingEnabled = true
+local RoleVisualsEnabled = true
+local SpectatorEnabled = false
+local SpectatorDepth = 20
+local SpectatorTransparency = 0.55
+local SpectatorMoveSpeed = 22
+local SpectatorVerticalSpeed = 18
+local SpectatorHotkey = Enum.KeyCode.V
+local WaitingForSpectatorHotkey = false
+local LastTouchPosition = Vector2.new(CurrentCamera.ViewportSize.X / 2, CurrentCamera.ViewportSize.Y / 2)
+local LastShotTime = 0
+local ClickDebounce = 0.08
+local MinimumPrediction = 0.00
+local MaximumPrediction = 0.30
+local PredictionTime = 0.09
+local MaximumHorizontalVelocity = 110
+local MaximumVerticalVelocity = 125
+local SpectatorRenderBindingName = "_StaffSpectatorView_" .. tostring(LocalPlayer.UserId)
+local SpectatorFinalBindingName = SpectatorRenderBindingName .. "_Final"
+
+RunService:UnbindFromRenderStep(SpectatorRenderBindingName)
+RunService:UnbindFromRenderStep(SpectatorFinalBindingName)
+
+local ExistingGui = PlayerGui:FindFirstChild("GunNearestToggleStaff")
+if ExistingGui then
+	ExistingGui:Destroy()
+end
+
+local ExistingMarker = workspace:FindFirstChild("_GunPredictionMarker")
+if ExistingMarker then
+	ExistingMarker:Destroy()
+end
+
+local ExistingSpectatorClone = workspace:FindFirstChild("_StaffSpectatorPreview")
+if ExistingSpectatorClone then
+	ExistingSpectatorClone:Destroy()
+end
+
+for _, Player in ipairs(Players:GetPlayers()) do
+	local Character = Player.Character
+	local OldHighlight = Character and Character:FindFirstChild("_StaffMouseTargetHighlight")
+	local OldRoleHighlight = Character and Character:FindFirstChild("_StaffRoleHighlight")
+
+	if OldHighlight then
+		OldHighlight:Destroy()
+	end
+
+	if OldRoleHighlight then
+		OldRoleHighlight:Destroy()
+	end
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "GunNearestToggleStaff"
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 100
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+
+local TargetCircle = Instance.new("Frame")
+TargetCircle.Name = "MouseTargetCircle"
+TargetCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+TargetCircle.Size = UDim2.fromOffset(TargetRadius * 2, TargetRadius * 2)
+TargetCircle.BackgroundColor3 = Color3.fromRGB(255, 35, 45)
+TargetCircle.BackgroundTransparency = 0.94
+TargetCircle.BorderSizePixel = 0
+TargetCircle.Active = false
+TargetCircle.Selectable = false
+TargetCircle.ZIndex = 20
+TargetCircle.Parent = ScreenGui
+
+local TargetCircleCorner = Instance.new("UICorner")
+TargetCircleCorner.CornerRadius = UDim.new(1, 0)
+TargetCircleCorner.Parent = TargetCircle
+
+local TargetCircleStroke = Instance.new("UIStroke")
+TargetCircleStroke.Color = Color3.fromRGB(225, 35, 45)
+TargetCircleStroke.Thickness = 2
+TargetCircleStroke.Transparency = 0.1
+TargetCircleStroke.Parent = TargetCircle
+
+local CenterDot = Instance.new("Frame")
+CenterDot.AnchorPoint = Vector2.new(0.5, 0.5)
+CenterDot.Position = UDim2.fromScale(0.5, 0.5)
+CenterDot.Size = UDim2.fromOffset(5, 5)
+CenterDot.BackgroundColor3 = Color3.fromRGB(255, 55, 65)
+CenterDot.BorderSizePixel = 0
+CenterDot.ZIndex = 21
+CenterDot.Parent = TargetCircle
+
+local CenterDotCorner = Instance.new("UICorner")
+CenterDotCorner.CornerRadius = UDim.new(1, 0)
+CenterDotCorner.Parent = CenterDot
+
+local CircleTargetLabel = Instance.new("TextLabel")
+CircleTargetLabel.AnchorPoint = Vector2.new(0.5, 0)
+CircleTargetLabel.Position = UDim2.new(0.5, 0, 1, 5)
+CircleTargetLabel.Size = UDim2.fromOffset(180, 22)
+CircleTargetLabel.BackgroundTransparency = 1
+CircleTargetLabel.Font = Enum.Font.GothamBold
+CircleTargetLabel.Text = "NO TARGET"
+CircleTargetLabel.TextColor3 = Color3.fromRGB(235, 75, 82)
+CircleTargetLabel.TextSize = 11
+CircleTargetLabel.ZIndex = 21
+CircleTargetLabel.Parent = TargetCircle
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+MainFrame.Position = UDim2.fromScale(0.5, 0.28)
+MainFrame.Size = UDim2.fromOffset(286, 264)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 21)
+MainFrame.BorderSizePixel = 0
+MainFrame.ZIndex = 30
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(63, 63, 72)
+MainStroke.Thickness = 1
+MainStroke.Transparency = 0.15
+MainStroke.Parent = MainFrame
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 42)
+TitleBar.BackgroundTransparency = 1
+TitleBar.Active = true
+TitleBar.ZIndex = 31
+TitleBar.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Position = UDim2.fromOffset(14, 0)
+Title.Size = UDim2.new(1, -58, 1, 0)
+Title.BackgroundTransparency = 1
+Title.Font = Enum.Font.GothamBold
+Title.Text = "MOUSE TARGETING"
+Title.TextColor3 = Color3.fromRGB(239, 239, 244)
+Title.TextSize = 14
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.ZIndex = 32
+Title.Parent = TitleBar
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.AnchorPoint = Vector2.new(1, 0.5)
+CloseButton.Position = UDim2.new(1, -10, 0.5, 0)
+CloseButton.Size = UDim2.fromOffset(28, 28)
+CloseButton.BackgroundColor3 = Color3.fromRGB(38, 38, 44)
+CloseButton.BorderSizePixel = 0
+CloseButton.AutoButtonColor = false
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.Text = "×"
+CloseButton.TextColor3 = Color3.fromRGB(210, 210, 217)
+CloseButton.TextSize = 18
+CloseButton.ZIndex = 32
+CloseButton.Parent = TitleBar
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 8)
+CloseCorner.Parent = CloseButton
+
+local Divider = Instance.new("Frame")
+Divider.Position = UDim2.fromOffset(12, 42)
+Divider.Size = UDim2.new(1, -24, 0, 1)
+Divider.BackgroundColor3 = Color3.fromRGB(53, 53, 60)
+Divider.BorderSizePixel = 0
+Divider.ZIndex = 31
+Divider.Parent = MainFrame
+
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Name = "ToggleButton"
+ToggleButton.Position = UDim2.fromOffset(14, 56)
+ToggleButton.Size = UDim2.fromOffset(126, 48)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(190, 45, 55)
+ToggleButton.BorderSizePixel = 0
+ToggleButton.AutoButtonColor = false
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.Text = "TARGETING: ON"
+ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleButton.TextSize = 13
+ToggleButton.ZIndex = 31
+ToggleButton.Parent = MainFrame
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 9)
+ToggleCorner.Parent = ToggleButton
+
+local VisualsButton = Instance.new("TextButton")
+VisualsButton.Name = "VisualsButton"
+VisualsButton.Position = UDim2.fromOffset(146, 56)
+VisualsButton.Size = UDim2.fromOffset(126, 48)
+VisualsButton.BackgroundColor3 = Color3.fromRGB(55, 105, 205)
+VisualsButton.BorderSizePixel = 0
+VisualsButton.AutoButtonColor = false
+VisualsButton.Font = Enum.Font.GothamBold
+VisualsButton.Text = "VISUALS: ON"
+VisualsButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+VisualsButton.TextSize = 12
+VisualsButton.ZIndex = 31
+VisualsButton.Parent = MainFrame
+
+local VisualsCorner = Instance.new("UICorner")
+VisualsCorner.CornerRadius = UDim.new(0, 9)
+VisualsCorner.Parent = VisualsButton
+
+local SpectatorButton = Instance.new("TextButton")
+SpectatorButton.Name = "SpectatorButton"
+SpectatorButton.Position = UDim2.fromOffset(14, 111)
+SpectatorButton.Size = UDim2.fromOffset(126, 38)
+SpectatorButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+SpectatorButton.BorderSizePixel = 0
+SpectatorButton.AutoButtonColor = false
+SpectatorButton.Font = Enum.Font.GothamBold
+SpectatorButton.Text = "SPECTATOR: OFF"
+SpectatorButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpectatorButton.TextSize = 12
+SpectatorButton.ZIndex = 31
+SpectatorButton.Parent = MainFrame
+
+local SpectatorCorner = Instance.new("UICorner")
+SpectatorCorner.CornerRadius = UDim.new(0, 9)
+SpectatorCorner.Parent = SpectatorButton
+
+local HotkeyButton = Instance.new("TextButton")
+HotkeyButton.Name = "HotkeyButton"
+HotkeyButton.Position = UDim2.fromOffset(146, 111)
+HotkeyButton.Size = UDim2.fromOffset(126, 38)
+HotkeyButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+HotkeyButton.BorderSizePixel = 0
+HotkeyButton.AutoButtonColor = false
+HotkeyButton.Font = Enum.Font.GothamBold
+HotkeyButton.Text = "HOTKEY: V"
+HotkeyButton.TextColor3 = Color3.fromRGB(225, 225, 232)
+HotkeyButton.TextSize = 11
+HotkeyButton.ZIndex = 31
+HotkeyButton.Parent = MainFrame
+
+local HotkeyCorner = Instance.new("UICorner")
+HotkeyCorner.CornerRadius = UDim.new(0, 9)
+HotkeyCorner.Parent = HotkeyButton
+
+local PredictionLabel = Instance.new("TextLabel")
+PredictionLabel.Name = "PredictionLabel"
+PredictionLabel.Position = UDim2.fromOffset(14, 157)
+PredictionLabel.Size = UDim2.new(1, -28, 0, 21)
+PredictionLabel.BackgroundTransparency = 1
+PredictionLabel.Font = Enum.Font.GothamMedium
+PredictionLabel.Text = "Prediction: 0.09s"
+PredictionLabel.TextColor3 = Color3.fromRGB(205, 205, 214)
+PredictionLabel.TextSize = 12
+PredictionLabel.TextXAlignment = Enum.TextXAlignment.Left
+PredictionLabel.ZIndex = 31
+PredictionLabel.Parent = MainFrame
+
+local SliderTrack = Instance.new("Frame")
+SliderTrack.Name = "SliderTrack"
+SliderTrack.Position = UDim2.fromOffset(14, 186)
+SliderTrack.Size = UDim2.new(1, -28, 0, 8)
+SliderTrack.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+SliderTrack.BorderSizePixel = 0
+SliderTrack.Active = true
+SliderTrack.ZIndex = 31
+SliderTrack.Parent = MainFrame
+
+local SliderTrackCorner = Instance.new("UICorner")
+SliderTrackCorner.CornerRadius = UDim.new(1, 0)
+SliderTrackCorner.Parent = SliderTrack
+
+local InitialSliderAlpha = (PredictionTime - MinimumPrediction) / (MaximumPrediction - MinimumPrediction)
+
+local SliderFill = Instance.new("Frame")
+SliderFill.Name = "SliderFill"
+SliderFill.Size = UDim2.fromScale(InitialSliderAlpha, 1)
+SliderFill.BackgroundColor3 = Color3.fromRGB(225, 45, 55)
+SliderFill.BorderSizePixel = 0
+SliderFill.ZIndex = 32
+SliderFill.Parent = SliderTrack
+
+local SliderFillCorner = Instance.new("UICorner")
+SliderFillCorner.CornerRadius = UDim.new(1, 0)
+SliderFillCorner.Parent = SliderFill
+
+local SliderKnob = Instance.new("Frame")
+SliderKnob.Name = "SliderKnob"
+SliderKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+SliderKnob.Position = UDim2.fromScale(InitialSliderAlpha, 0.5)
+SliderKnob.Size = UDim2.fromOffset(18, 18)
+SliderKnob.BackgroundColor3 = Color3.fromRGB(255, 225, 228)
+SliderKnob.BorderSizePixel = 0
+SliderKnob.Active = true
+SliderKnob.ZIndex = 33
+SliderKnob.Parent = SliderTrack
+
+local SliderKnobCorner = Instance.new("UICorner")
+SliderKnobCorner.CornerRadius = UDim.new(1, 0)
+SliderKnobCorner.Parent = SliderKnob
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Name = "StatusLabel"
+StatusLabel.Position = UDim2.fromOffset(14, 212)
+StatusLabel.Size = UDim2.new(1, -28, 0, 30)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Text = "Move the circle near a player, then click"
+StatusLabel.TextColor3 = Color3.fromRGB(160, 160, 170)
+StatusLabel.TextSize = 12
+StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.ZIndex = 31
+StatusLabel.Parent = MainFrame
+
+local ReopenButton = Instance.new("TextButton")
+ReopenButton.Name = "ReopenButton"
+ReopenButton.AnchorPoint = Vector2.new(0.5, 0)
+ReopenButton.Position = UDim2.new(0.5, 0, 0, 10)
+ReopenButton.Size = UDim2.fromOffset(112, 34)
+ReopenButton.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
+ReopenButton.BorderSizePixel = 0
+ReopenButton.AutoButtonColor = false
+ReopenButton.Font = Enum.Font.GothamBold
+ReopenButton.Text = "MOUSE TARGET"
+ReopenButton.TextColor3 = Color3.fromRGB(235, 235, 240)
+ReopenButton.TextSize = 11
+ReopenButton.Visible = false
+ReopenButton.ZIndex = 31
+ReopenButton.Parent = ScreenGui
+
+local ReopenCorner = Instance.new("UICorner")
+ReopenCorner.CornerRadius = UDim.new(0, 10)
+ReopenCorner.Parent = ReopenButton
+
+local ReopenStroke = Instance.new("UIStroke")
+ReopenStroke.Color = Color3.fromRGB(64, 64, 72)
+ReopenStroke.Thickness = 1
+ReopenStroke.Parent = ReopenButton
+
+local Dragging = false
+local DragInput
+local DragStart
+local StartPosition
+local SliderDragging = false
+local SliderInput
+local CurrentTargetPlayer
+local CurrentTargetPart
+local CurrentHighlight
+local RenderConnection
+local OriginalManualActivation = setmetatable({}, { __mode = "k" })
+local RoleHighlights = {}
+local RoleRefreshAccumulator = 0
+local SpectatorClone
+local SpectatorRealCharacter
+local SpectatorRealRoot
+local SpectatorOriginalCameraSubject
+local SpectatorOriginalCameraType
+local SpectatorPartStates = {}
+local SpectatorPreviousTargeting = false
+local SpectatorAnimationTracks = {}
+local SpectatorAnimationName
+
+local function UpdateDrag(Input)
+	local Delta = Input.Position - DragStart
+	MainFrame.Position = UDim2.new(
+		StartPosition.X.Scale,
+		StartPosition.X.Offset + Delta.X,
+		StartPosition.Y.Scale,
+		StartPosition.Y.Offset + Delta.Y
+	)
+end
+
+local function UpdatePrediction(ScreenX)
+	local TrackWidth = math.max(SliderTrack.AbsoluteSize.X, 1)
+	local Alpha = math.clamp((ScreenX - SliderTrack.AbsolutePosition.X) / TrackWidth, 0, 1)
+	PredictionTime = MinimumPrediction + (MaximumPrediction - MinimumPrediction) * Alpha
+	PredictionTime = math.round(PredictionTime * 100) / 100
+	Alpha = (PredictionTime - MinimumPrediction) / (MaximumPrediction - MinimumPrediction)
+
+	SliderFill.Size = UDim2.fromScale(Alpha, 1)
+	SliderKnob.Position = UDim2.fromScale(Alpha, 0.5)
+	PredictionLabel.Text = string.format("Prediction: %.2fs", PredictionTime)
+end
+
+local function BeginSlider(Input)
+	if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+		SliderDragging = true
+		SliderInput = Input
+		UpdatePrediction(Input.Position.X)
+	end
+end
+
+SliderTrack.InputBegan:Connect(BeginSlider)
+SliderKnob.InputBegan:Connect(BeginSlider)
+
+TitleBar.InputBegan:Connect(function(Input)
+	if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+		Dragging = true
+		DragStart = Input.Position
+		StartPosition = MainFrame.Position
+
+		Input.Changed:Connect(function()
+			if Input.UserInputState == Enum.UserInputState.End then
+				Dragging = false
+			end
+		end)
+	end
+end)
+
+TitleBar.InputChanged:Connect(function(Input)
+	if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
+		DragInput = Input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+	if Dragging and Input == DragInput then
+		UpdateDrag(Input)
+	end
+
+	if Input.UserInputType == Enum.UserInputType.Touch then
+		LastTouchPosition = Vector2.new(Input.Position.X, Input.Position.Y)
+	end
+
+	if SliderDragging and (Input == SliderInput or Input.UserInputType == Enum.UserInputType.MouseMovement) then
+		UpdatePrediction(Input.Position.X)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(Input)
+	if Input == SliderInput or Input.UserInputType == Enum.UserInputType.MouseButton1 then
+		SliderDragging = false
+		SliderInput = nil
+	end
+end)
+
+CloseButton.MouseButton1Click:Connect(function()
+	MainFrame.Visible = false
+	ReopenButton.Visible = true
+end)
+
+ReopenButton.MouseButton1Click:Connect(function()
+	ReopenButton.Visible = false
+	MainFrame.Visible = true
+end)
+
+local function GetPointerPosition()
+	if UserInputService.MouseEnabled then
+		return UserInputService:GetMouseLocation()
+	end
+
+	return LastTouchPosition
+end
+
+local function GetEquippedGun()
+	local Character = LocalPlayer.Character
+	local Gun = Character and Character:FindFirstChild("Gun")
+	local Shoot = Gun and Gun:FindFirstChild("Shoot")
+	local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+	local OriginAttachment = RootPart and RootPart:FindFirstChild("GunRaycastAttachment")
+
+	if Gun and Gun:IsA("Tool") and Shoot and Shoot:IsA("RemoteEvent") and OriginAttachment and OriginAttachment:IsA("Attachment") then
+		return Gun, Shoot, OriginAttachment
+	end
+
+	return nil
+end
+
+local function SetManualActivation(Gun, ManualOnly)
+	if not Gun then
+		return
+	end
+
+	if OriginalManualActivation[Gun] == nil then
+		OriginalManualActivation[Gun] = Gun.ManualActivationOnly
+	end
+
+	Gun.ManualActivationOnly = ManualOnly
+end
+
+local function RestoreManualActivation()
+	for Gun, OriginalValue in pairs(OriginalManualActivation) do
+		if Gun.Parent then
+			Gun.ManualActivationOnly = OriginalValue
+		end
+	end
+
+	table.clear(OriginalManualActivation)
+end
+
+local function HasNamedTool(Container, ToolName)
+	if not Container then
+		return false
+	end
+
+	for _, Child in ipairs(Container:GetChildren()) do
+		if Child:IsA("Tool") and string.lower(Child.Name) == string.lower(ToolName) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function ClearRoleHighlight(Player)
+	local Highlight = RoleHighlights[Player]
+
+	if Highlight then
+		Highlight:Destroy()
+		RoleHighlights[Player] = nil
+	end
+end
+
+local function ClearAllRoleHighlights()
+	for _, Highlight in pairs(RoleHighlights) do
+		if Highlight then
+			Highlight:Destroy()
+		end
+	end
+
+	table.clear(RoleHighlights)
+end
+
+local function UpdateRoleVisual(Player)
+	if not RoleVisualsEnabled or Player == LocalPlayer then
+		ClearRoleHighlight(Player)
+		return
+	end
+
+	local Character = Player.Character
+	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	local Backpack = Player:FindFirstChildOfClass("Backpack") or Player:FindFirstChild("Backpack")
+
+	if not Character or not Humanoid or Humanoid.Health <= 0 then
+		ClearRoleHighlight(Player)
+		return
+	end
+
+	local HasKnife = HasNamedTool(Character, "Knife") or HasNamedTool(Backpack, "Knife")
+	local HasGun = HasNamedTool(Character, "Gun") or HasNamedTool(Backpack, "Gun")
+	local OutlineColor
+
+	if HasKnife then
+		OutlineColor = Color3.fromRGB(255, 45, 55)
+	elseif HasGun then
+		OutlineColor = Color3.fromRGB(55, 135, 255)
+	else
+		ClearRoleHighlight(Player)
+		return
+	end
+
+	local Highlight = RoleHighlights[Player]
+
+	if Highlight and (not Highlight.Parent or Highlight.Adornee ~= Character) then
+		ClearRoleHighlight(Player)
+		Highlight = nil
+	end
+
+	if not Highlight then
+		Highlight = Instance.new("Highlight")
+		Highlight.Name = "_StaffRoleHighlight"
+		Highlight.Adornee = Character
+		Highlight.FillTransparency = 1
+		Highlight.OutlineTransparency = 0
+		Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		Highlight.Parent = Character
+		RoleHighlights[Player] = Highlight
+	end
+
+	Highlight.OutlineColor = OutlineColor
+
+	if CurrentTargetPlayer == Player and CurrentHighlight then
+		CurrentHighlight:Destroy()
+		CurrentHighlight = nil
+	end
+end
+
+local function RefreshRoleVisuals()
+	if not RoleVisualsEnabled then
+		ClearAllRoleHighlights()
+		return
+	end
+
+	local ActivePlayers = {}
+
+	for _, Player in ipairs(Players:GetPlayers()) do
+		ActivePlayers[Player] = true
+		UpdateRoleVisual(Player)
+	end
+
+	for Player in pairs(RoleHighlights) do
+		if not ActivePlayers[Player] then
+			ClearRoleHighlight(Player)
+		end
+	end
+end
+
+local function HasClearShot(OriginPosition, TargetCharacter, TargetPosition)
+	local Character = LocalPlayer.Character
+	local RaycastParameters = RaycastParams.new()
+	RaycastParameters.FilterType = Enum.RaycastFilterType.Exclude
+	RaycastParameters.FilterDescendantsInstances = Character and { Character } or {}
+	RaycastParameters.IgnoreWater = true
+
+	local Result = workspace:Raycast(OriginPosition, TargetPosition - OriginPosition, RaycastParameters)
+	return Result == nil or Result.Instance:IsDescendantOf(TargetCharacter)
+end
+
+local function GetPredictedAimPosition(TargetCharacter, AimPart)
+	local RootPart = TargetCharacter:FindFirstChild("HumanoidRootPart")
+	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
+
+	if not RootPart or not Humanoid or PredictionTime <= 0 then
+		return AimPart.Position
+	end
+
+	local Velocity = RootPart.AssemblyLinearVelocity
+	local State = Humanoid:GetState()
+	local IsAirborne = Humanoid.FloorMaterial == Enum.Material.Air
+		or State == Enum.HumanoidStateType.Jumping
+		or State == Enum.HumanoidStateType.Freefall
+
+	local HorizontalVelocity = Vector3.new(
+		math.clamp(Velocity.X, -MaximumHorizontalVelocity, MaximumHorizontalVelocity),
+		0,
+		math.clamp(Velocity.Z, -MaximumHorizontalVelocity, MaximumHorizontalVelocity)
+	)
+	local VerticalVelocity = IsAirborne and math.clamp(Velocity.Y, -MaximumVerticalVelocity, MaximumVerticalVelocity) or 0
+	local PredictedPosition = AimPart.Position
+		+ HorizontalVelocity * PredictionTime
+		+ Vector3.new(0, VerticalVelocity * PredictionTime, 0)
+
+	if IsAirborne then
+		PredictedPosition += Vector3.new(0, -0.5 * workspace.Gravity * PredictionTime * PredictionTime, 0)
+	end
+
+	return PredictedPosition
+end
+
+local function GetCharacterScreenDistance(Character, PointerPosition)
+	CurrentCamera = workspace.CurrentCamera or CurrentCamera
+
+	local MinimumX = math.huge
+	local MinimumY = math.huge
+	local MaximumX = -math.huge
+	local MaximumY = -math.huge
+	local HasPointInFront = false
+
+	for _, BodyPart in ipairs(Character:GetChildren()) do
+		if BodyPart:IsA("BasePart") then
+			local HalfSize = BodyPart.Size * 0.5
+
+			for X = -1, 1, 2 do
+				for Y = -1, 1, 2 do
+					for Z = -1, 1, 2 do
+						local Corner = BodyPart.CFrame:PointToWorldSpace(Vector3.new(
+							HalfSize.X * X,
+							HalfSize.Y * Y,
+							HalfSize.Z * Z
+						))
+						local ScreenPoint = CurrentCamera:WorldToScreenPoint(Corner)
+
+						if ScreenPoint.Z > 0 then
+							HasPointInFront = true
+							MinimumX = math.min(MinimumX, ScreenPoint.X)
+							MinimumY = math.min(MinimumY, ScreenPoint.Y)
+							MaximumX = math.max(MaximumX, ScreenPoint.X)
+							MaximumY = math.max(MaximumY, ScreenPoint.Y)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if not HasPointInFront then
+		return nil
+	end
+
+	local ViewportSize = CurrentCamera.ViewportSize
+	if MaximumX < 0 or MaximumY < 0 or MinimumX > ViewportSize.X or MinimumY > ViewportSize.Y then
+		return nil
+	end
+
+	local ClosestPoint = Vector2.new(
+		math.clamp(PointerPosition.X, MinimumX, MaximumX),
+		math.clamp(PointerPosition.Y, MinimumY, MaximumY)
+	)
+
+	return (ClosestPoint - PointerPosition).Magnitude
+end
+
+local function FindTargetNearPointer(PointerPosition, OriginPosition)
+	CurrentCamera = workspace.CurrentCamera or CurrentCamera
+
+	local BestPlayer
+	local BestAimPart
+	local BestScreenDistance = TargetRadius
+
+	for _, Player in ipairs(Players:GetPlayers()) do
+		if Player ~= LocalPlayer then
+			local Character = Player.Character
+			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+			local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+			local AimPart = Character and (Character:FindFirstChild("Head") or RootPart)
+
+			if Humanoid and Humanoid.Health > 0 and RootPart and AimPart then
+				local ScreenDistance = GetCharacterScreenDistance(Character, PointerPosition)
+
+				if ScreenDistance then
+					local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
+
+					if ScreenDistance <= BestScreenDistance and HasClearShot(OriginPosition, Character, PredictedPosition) then
+						BestPlayer = Player
+						BestAimPart = AimPart
+						BestScreenDistance = ScreenDistance
+					end
+				end
+			end
+		end
+	end
+
+	return BestPlayer, BestAimPart
+end
+
+local function ClearTargetHighlight()
+	if CurrentHighlight then
+		CurrentHighlight:Destroy()
+		CurrentHighlight = nil
+	end
+end
+
+local function SetCurrentTarget(Player, AimPart)
+	CurrentTargetPlayer = Player
+	CurrentTargetPart = AimPart
+
+	local Character = Player and Player.Character
+	local HasRoleHighlight = Player and RoleHighlights[Player] ~= nil
+
+	if not Character or HasRoleHighlight then
+		ClearTargetHighlight()
+		return
+	end
+
+	if CurrentHighlight and CurrentHighlight.Adornee == Character then
+		return
+	end
+
+	ClearTargetHighlight()
+
+	if Character then
+		CurrentHighlight = Instance.new("Highlight")
+		CurrentHighlight.Name = "_StaffMouseTargetHighlight"
+		CurrentHighlight.Adornee = Character
+		CurrentHighlight.FillTransparency = 1
+		CurrentHighlight.OutlineColor = Color3.fromRGB(255, 45, 55)
+		CurrentHighlight.OutlineTransparency = 0.05
+		CurrentHighlight.DepthMode = Enum.HighlightDepthMode.Occluded
+		CurrentHighlight.Parent = Character
+	end
+end
+
+local function SetTargetingState(Enabled, StatusText)
+	TargetingEnabled = Enabled
+
+	if Enabled then
+		ToggleButton.Text = "TARGETING: ON"
+		ToggleButton.BackgroundColor3 = Color3.fromRGB(190, 45, 55)
+		StatusLabel.Text = StatusText or "Move the circle near a player, then click"
+	else
+		ToggleButton.Text = "TARGETING: OFF"
+		ToggleButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+		StatusLabel.Text = StatusText or "Targeting disabled"
+		TargetCircle.Visible = false
+		SetCurrentTarget(nil, nil)
+		RestoreManualActivation()
+	end
+
+	StatusLabel.TextColor3 = Color3.fromRGB(160, 160, 170)
+end
+
+local function SetSpectatorButtonState(Enabled)
+	if Enabled then
+		SpectatorButton.Text = "SPECTATOR: ON"
+		SpectatorButton.BackgroundColor3 = Color3.fromRGB(125, 70, 205)
+	else
+		SpectatorButton.Text = "SPECTATOR: OFF"
+		SpectatorButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+	end
+end
+
+local function FindSpectatorAnimation(Character, StateName)
+	local Animate = Character and Character:FindFirstChild("Animate")
+	if not Animate then
+		return nil
+	end
+
+	for _, Child in ipairs(Animate:GetChildren()) do
+		if string.lower(Child.Name) == string.lower(StateName) then
+			return Child:FindFirstChildWhichIsA("Animation", true)
+		end
+	end
+
+	for _, Descendant in ipairs(Animate:GetDescendants()) do
+		if Descendant:IsA("Animation") and string.find(string.lower(Descendant.Name), string.lower(StateName), 1, true) then
+			return Descendant
+		end
+	end
+
+	return nil
+end
+
+local function StopSpectatorAnimations()
+	for _, Track in pairs(SpectatorAnimationTracks) do
+		if Track then
+			pcall(function()
+				Track:Stop(0.1)
+			end)
+		end
+	end
+
+	table.clear(SpectatorAnimationTracks)
+	SpectatorAnimationName = nil
+end
+
+local function LoadSpectatorAnimations(RealCharacter, CloneHumanoid)
+	StopSpectatorAnimations()
+
+	local Animator = CloneHumanoid:FindFirstChildOfClass("Animator")
+	if not Animator then
+		Animator = Instance.new("Animator")
+		Animator.Parent = CloneHumanoid
+	end
+
+	local Configurations = {
+		Idle = { Source = "idle", Looped = true, Priority = Enum.AnimationPriority.Idle },
+		Walk = { Source = "walk", Looped = true, Priority = Enum.AnimationPriority.Movement },
+		Run = { Source = "run", Looped = true, Priority = Enum.AnimationPriority.Movement },
+		Jump = { Source = "jump", Looped = false, Priority = Enum.AnimationPriority.Action },
+		Fall = { Source = "fall", Looped = true, Priority = Enum.AnimationPriority.Movement },
+	}
+
+	for Name, Configuration in pairs(Configurations) do
+		local Animation = FindSpectatorAnimation(RealCharacter, Configuration.Source)
+
+		if Animation and Animation.AnimationId ~= "" then
+			local Success, Track = pcall(function()
+				return Animator:LoadAnimation(Animation)
+			end)
+
+			if Success and Track then
+				Track.Looped = Configuration.Looped
+				Track.Priority = Configuration.Priority
+				SpectatorAnimationTracks[Name] = Track
+			end
+		end
+	end
+end
+
+local function UpdateSpectatorAnimation(HorizontalSpeed, VerticalDirection)
+	local DesiredName
+
+	if VerticalDirection > 0.05 and SpectatorAnimationTracks.Jump then
+		DesiredName = "Jump"
+	elseif VerticalDirection < -0.05 and SpectatorAnimationTracks.Fall then
+		DesiredName = "Fall"
+	elseif HorizontalSpeed > 0.05 then
+		DesiredName = SpectatorAnimationTracks.Walk and "Walk" or "Run"
+	else
+		DesiredName = "Idle"
+	end
+
+	local DesiredTrack = DesiredName and SpectatorAnimationTracks[DesiredName]
+	if not DesiredTrack then
+		return
+	end
+
+	if SpectatorAnimationName ~= DesiredName then
+		for Name, Track in pairs(SpectatorAnimationTracks) do
+			if Name ~= DesiredName and Track.IsPlaying then
+				Track:Stop(0.12)
+			end
+		end
+
+		SpectatorAnimationName = DesiredName
+		DesiredTrack:Play(0.12)
+	elseif not DesiredTrack.IsPlaying then
+		DesiredTrack:Play(0.12)
+	end
+
+	if DesiredName == "Walk" or DesiredName == "Run" then
+		DesiredTrack:AdjustSpeed(math.clamp(SpectatorMoveSpeed / 16, 0.5, 2.5))
+	else
+		DesiredTrack:AdjustSpeed(1)
+	end
+end
+
+local function ClearCharacterVelocity(Character)
+	if not Character then
+		return
+	end
+
+	for _, Descendant in ipairs(Character:GetDescendants()) do
+		if Descendant:IsA("BasePart") then
+			Descendant.AssemblyLinearVelocity = Vector3.zero
+			Descendant.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+end
+
+local function RestoreSpectatorPartStates()
+	for Part, State in pairs(SpectatorPartStates) do
+		if Part and Part.Parent then
+			Part.CanCollide = State.CanCollide
+			Part.CanTouch = State.CanTouch
+			Part.CanQuery = State.CanQuery
+			Part.LocalTransparencyModifier = State.LocalTransparencyModifier
+		end
+	end
+
+	table.clear(SpectatorPartStates)
+end
+
+local function MoveRealCharacterBelowPreview(PreviewCFrame)
+	local RealCharacter = SpectatorRealCharacter
+	local RealRoot = SpectatorRealRoot
+
+	if not PreviewCFrame or not RealCharacter or not RealCharacter.Parent or not RealRoot or not RealRoot.Parent then
+		return
+	end
+
+	for _, Descendant in ipairs(RealCharacter:GetDescendants()) do
+		if Descendant:IsA("BasePart") then
+			if not SpectatorPartStates[Descendant] then
+				SpectatorPartStates[Descendant] = {
+					CanCollide = Descendant.CanCollide,
+					CanTouch = Descendant.CanTouch,
+					CanQuery = Descendant.CanQuery,
+					LocalTransparencyModifier = Descendant.LocalTransparencyModifier,
+				}
+			end
+
+			Descendant.CanCollide = false
+			Descendant.CanTouch = false
+			Descendant.CanQuery = false
+			Descendant.LocalTransparencyModifier = 1
+		end
+	end
+
+	local BelowPosition = PreviewCFrame.Position - Vector3.new(0, SpectatorDepth, 0)
+	local BelowCFrame = CFrame.new(BelowPosition) * PreviewCFrame.Rotation
+
+	RealCharacter:PivotTo(BelowCFrame)
+	RealRoot.CFrame = BelowCFrame
+end
+
+local function DisableSpectator()
+	if not SpectatorEnabled then
+		return
+	end
+
+	local Clone = SpectatorClone
+	local RealCharacter = SpectatorRealCharacter
+	local FinalCFrame = Clone and Clone.Parent and Clone:GetPivot() or nil
+
+	SpectatorEnabled = false
+	SetSpectatorButtonState(false)
+	RunService:UnbindFromRenderStep(SpectatorRenderBindingName)
+	RunService:UnbindFromRenderStep(SpectatorFinalBindingName)
+
+	if RealCharacter and RealCharacter.Parent then
+		ClearCharacterVelocity(RealCharacter)
+
+		if FinalCFrame then
+			RealCharacter:PivotTo(FinalCFrame)
+		end
+
+		ClearCharacterVelocity(RealCharacter)
+		RestoreSpectatorPartStates()
+		ClearCharacterVelocity(RealCharacter)
+
+		task.defer(function()
+			if RealCharacter and RealCharacter.Parent then
+				ClearCharacterVelocity(RealCharacter)
+			end
+		end)
+
+	else
+		table.clear(SpectatorPartStates)
+	end
+
+	CurrentCamera = workspace.CurrentCamera or CurrentCamera
+	local CurrentCharacter = LocalPlayer.Character
+	local CurrentHumanoid = CurrentCharacter and CurrentCharacter:FindFirstChildOfClass("Humanoid")
+	local CameraSubject = SpectatorOriginalCameraSubject
+
+	if not CameraSubject or not CameraSubject.Parent or (Clone and CameraSubject:IsDescendantOf(Clone)) then
+		CameraSubject = CurrentHumanoid
+	end
+
+	if SpectatorOriginalCameraType then
+		CurrentCamera.CameraType = SpectatorOriginalCameraType
+	end
+
+	if CameraSubject then
+		CurrentCamera.CameraSubject = CameraSubject
+	end
+
+	StopSpectatorAnimations()
+
+	if Clone then
+		Clone:Destroy()
+	end
+
+	SpectatorClone = nil
+	SpectatorRealCharacter = nil
+	SpectatorRealRoot = nil
+	SpectatorOriginalCameraSubject = nil
+	SpectatorOriginalCameraType = nil
+
+	if SpectatorPreviousTargeting and CurrentHumanoid and CurrentHumanoid.Health > 0 then
+		SetTargetingState(true, "Move the circle near a player, then click")
+	else
+		StatusLabel.Text = "Spectator disabled"
+		StatusLabel.TextColor3 = Color3.fromRGB(160, 160, 170)
+	end
+
+	SpectatorPreviousTargeting = false
+end
+
+local function EnableSpectator()
+	if SpectatorEnabled then
+		return
+	end
+
+	local RealCharacter = LocalPlayer.Character
+	local RealHumanoid = RealCharacter and RealCharacter:FindFirstChildOfClass("Humanoid")
+	local RealRoot = RealCharacter and RealCharacter:FindFirstChild("HumanoidRootPart")
+
+	if not RealCharacter or not RealHumanoid or RealHumanoid.Health <= 0 or not RealRoot then
+		StatusLabel.Text = "Character is not ready"
+		StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
+		return
+	end
+
+	RealCharacter.Archivable = true
+	for _, Child in ipairs(RealCharacter:GetChildren()) do
+		if Child:IsA("Tool") then
+			Child.Archivable = true
+
+			for _, Descendant in ipairs(Child:GetDescendants()) do
+				Descendant.Archivable = true
+			end
+		end
+	end
+
+	local Clone = RealCharacter:Clone()
+	local CloneHumanoid = Clone:FindFirstChildOfClass("Humanoid")
+	local CloneRoot = Clone:FindFirstChild("HumanoidRootPart")
+
+	if not CloneHumanoid or not CloneRoot then
+		Clone:Destroy()
+		StatusLabel.Text = "Could not create spectator preview"
+		StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
+		return
+	end
+
+	Clone.Name = "_StaffSpectatorPreview"
+
+	for _, Descendant in ipairs(Clone:GetDescendants()) do
+		if Descendant:IsA("Highlight") then
+			Descendant:Destroy()
+		elseif Descendant:IsA("Script") or Descendant:IsA("ModuleScript") then
+			Descendant:Destroy()
+		elseif Descendant:IsA("LocalScript") and Descendant.Name ~= "Animate" then
+			Descendant:Destroy()
+		elseif Descendant:IsA("BasePart") then
+			Descendant.Transparency = math.max(Descendant.Transparency, SpectatorTransparency)
+			Descendant.LocalTransparencyModifier = 0
+			Descendant.CanCollide = false
+			Descendant.CanTouch = false
+			Descendant.CanQuery = false
+		elseif Descendant:IsA("Decal") then
+			Descendant.Transparency = math.max(Descendant.Transparency, SpectatorTransparency)
+		end
+	end
+
+	local CloneAnimate = Clone:FindFirstChild("Animate")
+	if CloneAnimate and CloneAnimate:IsA("LocalScript") then
+		CloneAnimate.Disabled = true
+	end
+
+	CloneHumanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	CloneHumanoid.BreakJointsOnDeath = false
+	CloneHumanoid.AutoRotate = false
+	Clone.Parent = workspace
+	local PreviewStartCFrame = RealCharacter:GetPivot()
+	Clone:PivotTo(PreviewStartCFrame)
+	CloneRoot.Anchored = true
+	LoadSpectatorAnimations(RealCharacter, CloneHumanoid)
+
+	table.clear(SpectatorPartStates)
+	for _, Descendant in ipairs(RealCharacter:GetDescendants()) do
+		if Descendant:IsA("BasePart") then
+			SpectatorPartStates[Descendant] = {
+				CanCollide = Descendant.CanCollide,
+				CanTouch = Descendant.CanTouch,
+				CanQuery = Descendant.CanQuery,
+				LocalTransparencyModifier = Descendant.LocalTransparencyModifier,
+			}
+			Descendant.CanCollide = false
+			Descendant.CanTouch = false
+			Descendant.CanQuery = false
+			Descendant.LocalTransparencyModifier = 1
+		end
+	end
+
+	SpectatorClone = Clone
+	SpectatorRealCharacter = RealCharacter
+	SpectatorRealRoot = RealRoot
+	SpectatorOriginalCameraSubject = CurrentCamera.CameraSubject
+	SpectatorOriginalCameraType = CurrentCamera.CameraType
+	SpectatorPreviousTargeting = TargetingEnabled
+	SpectatorEnabled = true
+
+	MoveRealCharacterBelowPreview(PreviewStartCFrame)
+	SetTargetingState(false, "Spectator active")
+	SetSpectatorButtonState(true)
+	CurrentCamera.CameraType = Enum.CameraType.Custom
+	CurrentCamera.CameraSubject = CloneHumanoid
+	RunService:UnbindFromRenderStep(SpectatorRenderBindingName)
+	RunService:UnbindFromRenderStep(SpectatorFinalBindingName)
+
+	local function EnforceSpectatorView()
+		if not SpectatorEnabled or not SpectatorClone or not SpectatorClone.Parent then
+			return
+		end
+
+		CurrentCamera = workspace.CurrentCamera or CurrentCamera
+		local PreviewHumanoid = SpectatorClone:FindFirstChildOfClass("Humanoid")
+
+		if PreviewHumanoid then
+			CurrentCamera.CameraType = Enum.CameraType.Custom
+			CurrentCamera.CameraSubject = PreviewHumanoid
+		end
+
+		MoveRealCharacterBelowPreview(SpectatorClone:GetPivot())
+	end
+
+	RunService:BindToRenderStep(SpectatorRenderBindingName, Enum.RenderPriority.Camera.Value - 1, EnforceSpectatorView)
+	RunService:BindToRenderStep(SpectatorFinalBindingName, Enum.RenderPriority.Last.Value, EnforceSpectatorView)
+
+	StatusLabel.Text = "Spectator active — preview is local only"
+	StatusLabel.TextColor3 = Color3.fromRGB(185, 145, 255)
+end
+
+local function UpdateSpectator(DeltaTime)
+	if not SpectatorEnabled then
+		return
+	end
+
+	local Clone = SpectatorClone
+	local RealCharacter = SpectatorRealCharacter
+	local RealRoot = SpectatorRealRoot
+	local RealHumanoid = RealCharacter and RealCharacter:FindFirstChildOfClass("Humanoid")
+	local CloneHumanoid = Clone and Clone:FindFirstChildOfClass("Humanoid")
+	local CloneRoot = Clone and Clone:FindFirstChild("HumanoidRootPart")
+
+	if not Clone or not Clone.Parent or not CloneHumanoid or not CloneRoot or not RealCharacter or not RealCharacter.Parent or not RealHumanoid or not RealRoot or not RealRoot.Parent then
+		DisableSpectator()
+		return
+	end
+
+	local MoveDirection = RealHumanoid.MoveDirection
+	local HorizontalDirection = Vector3.new(MoveDirection.X, 0, MoveDirection.Z)
+	local VerticalDirection = 0
+
+	if UserInputService:IsKeyDown(Enum.KeyCode.Space) or UserInputService:IsKeyDown(Enum.KeyCode.E) then
+		VerticalDirection += 1
+	end
+
+	if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+		or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+		or UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+		VerticalDirection -= 1
+	end
+
+	local StepTime = math.min(DeltaTime or 0, 0.05)
+	local PreviewCFrame = Clone:GetPivot()
+	local Movement = HorizontalDirection * SpectatorMoveSpeed
+		+ Vector3.new(0, VerticalDirection * SpectatorVerticalSpeed, 0)
+	local PreviewPosition = PreviewCFrame.Position + Movement * StepTime
+	local PreviewRotation = PreviewCFrame.Rotation
+
+	if HorizontalDirection.Magnitude > 0.05 then
+		PreviewRotation = CFrame.lookAt(Vector3.zero, HorizontalDirection.Unit).Rotation
+	end
+
+	PreviewCFrame = CFrame.new(PreviewPosition) * PreviewRotation
+	Clone:PivotTo(PreviewCFrame)
+	UpdateSpectatorAnimation(HorizontalDirection.Magnitude, VerticalDirection)
+
+	MoveRealCharacterBelowPreview(PreviewCFrame)
+end
+
+local function IsPointerOverStaffGui(PointerPosition)
+	for _, GuiObject in ipairs(PlayerGui:GetGuiObjectsAtPosition(PointerPosition.X, PointerPosition.Y)) do
+		if GuiObject:IsDescendantOf(ScreenGui) and GuiObject ~= TargetCircle and not GuiObject:IsDescendantOf(TargetCircle) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function FireAtPointer(PointerPosition)
+	if not TargetingEnabled or IsPointerOverStaffGui(PointerPosition) then
+		return
+	end
+
+	if os.clock() - LastShotTime < ClickDebounce then
+		return
+	end
+
+	local Gun, Shoot, OriginAttachment = GetEquippedGun()
+	if not Gun then
+		StatusLabel.Text = "Equip Gun before clicking"
+		StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
+		return
+	end
+
+	local TargetPlayer, AimPart = FindTargetNearPointer(PointerPosition, OriginAttachment.WorldPosition)
+	if not TargetPlayer or not AimPart then
+		StatusLabel.Text = "No visible player touching the circle"
+		StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
+		return
+	end
+
+	LastShotTime = os.clock()
+	local TargetCharacter = TargetPlayer.Character
+	if not TargetCharacter or not AimPart:IsDescendantOf(TargetCharacter) then
+		return
+	end
+
+	local PredictedPosition = GetPredictedAimPosition(TargetCharacter, AimPart)
+	Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(PredictedPosition))
+	StatusLabel.Text = "Shot sent to " .. TargetPlayer.DisplayName
+	StatusLabel.TextColor3 = Color3.fromRGB(130, 235, 160)
+end
+
+ToggleButton.MouseButton1Click:Connect(function()
+	if SpectatorEnabled then
+		StatusLabel.Text = "Disable spectator before targeting"
+		StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
+		return
+	end
+
+	SetTargetingState(not TargetingEnabled)
+end)
+
+VisualsButton.MouseButton1Click:Connect(function()
+	RoleVisualsEnabled = not RoleVisualsEnabled
+
+	if RoleVisualsEnabled then
+		VisualsButton.Text = "VISUALS: ON"
+		VisualsButton.BackgroundColor3 = Color3.fromRGB(55, 105, 205)
+		RefreshRoleVisuals()
+	else
+		VisualsButton.Text = "VISUALS: OFF"
+		VisualsButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+		ClearAllRoleHighlights()
+	end
+end)
+
+SpectatorButton.MouseButton1Click:Connect(function()
+	if SpectatorEnabled then
+		DisableSpectator()
+	else
+		EnableSpectator()
+	end
+end)
+
+HotkeyButton.MouseButton1Click:Connect(function()
+	WaitingForSpectatorHotkey = true
+	HotkeyButton.Text = "PRESS A KEY"
+	HotkeyButton.BackgroundColor3 = Color3.fromRGB(75, 75, 90)
+end)
+
+UserInputService.InputBegan:Connect(function(Input, GameProcessed)
+	if GameProcessed then
+		return
+	end
+
+	if WaitingForSpectatorHotkey and Input.UserInputType == Enum.UserInputType.Keyboard then
+		WaitingForSpectatorHotkey = false
+		HotkeyButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+
+		if Input.KeyCode ~= Enum.KeyCode.Escape and Input.KeyCode ~= Enum.KeyCode.Unknown then
+			SpectatorHotkey = Input.KeyCode
+		end
+
+		HotkeyButton.Text = "HOTKEY: " .. SpectatorHotkey.Name
+		return
+	end
+
+	if Input.UserInputType == Enum.UserInputType.Keyboard and Input.KeyCode == SpectatorHotkey then
+		if SpectatorEnabled then
+			DisableSpectator()
+		else
+			EnableSpectator()
+		end
+		return
+	end
+
+	if Input.UserInputType == Enum.UserInputType.MouseButton1 then
+		FireAtPointer(Vector2.new(Input.Position.X, Input.Position.Y))
+	end
+end)
+
+UserInputService.TouchTapInWorld:Connect(function(Position, GameProcessed)
+	if GameProcessed then
+		return
+	end
+
+	LastTouchPosition = Position
+	FireAtPointer(Position)
+end)
+
+RenderConnection = RunService.RenderStepped:Connect(function(DeltaTime)
+	UpdateSpectator(DeltaTime)
+
+	RoleRefreshAccumulator += DeltaTime
+
+	if RoleRefreshAccumulator >= 0.2 then
+		RoleRefreshAccumulator = 0
+		RefreshRoleVisuals()
+	end
+
+	if not TargetingEnabled then
+		TargetCircle.Visible = false
+		return
+	end
+
+	local PointerPosition = GetPointerPosition()
+	TargetCircle.Visible = true
+	TargetCircle.Position = UDim2.fromOffset(PointerPosition.X, PointerPosition.Y)
+
+	local Gun, _, OriginAttachment = GetEquippedGun()
+	local OriginPosition = OriginAttachment and OriginAttachment.WorldPosition or CurrentCamera.CFrame.Position
+
+	if Gun then
+		SetManualActivation(Gun, true)
+	end
+
+	local TargetPlayer, AimPart = FindTargetNearPointer(PointerPosition, OriginPosition)
+	SetCurrentTarget(TargetPlayer, AimPart)
+
+	if TargetPlayer then
+		TargetCircleStroke.Color = Color3.fromRGB(255, 25, 35)
+		TargetCircleStroke.Thickness = 3
+		CircleTargetLabel.Text = TargetPlayer.DisplayName
+		CircleTargetLabel.TextColor3 = Color3.fromRGB(255, 70, 78)
+	else
+		TargetCircleStroke.Color = Color3.fromRGB(205, 45, 55)
+		TargetCircleStroke.Thickness = 2
+		CircleTargetLabel.Text = Gun and "NO TARGET" or "EQUIP GUN"
+		CircleTargetLabel.TextColor3 = Color3.fromRGB(210, 85, 90)
+	end
+end)
+
+ScreenGui.Destroying:Connect(function()
+	DisableSpectator()
+
+	if RenderConnection then
+		RenderConnection:Disconnect()
+		RenderConnection = nil
+	end
+
+	ClearTargetHighlight()
+	ClearAllRoleHighlights()
+	RestoreManualActivation()
+end)
