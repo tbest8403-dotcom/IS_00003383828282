@@ -1,0 +1,637 @@
+-- Run this LocalScript from StarterPlayerScripts or your authorized staff loader.
+-- Whoever runs the script receives access to the GUI.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local PlacedBoards = workspace:WaitForChild("PlacedBoards")
+
+local SubmitDelay = 0.04
+
+local RemoteHandler = require(ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RemoteHandler"))
+local PlaceNumberRemote = RemoteHandler.get(RemoteHandler.Events.Reliable.PlaceNumber)
+
+local ExistingGui = PlayerGui:FindFirstChild("StaffSudokuAutoFinish")
+if ExistingGui then
+	ExistingGui:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "StaffSudokuAutoFinish"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 100
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+MainFrame.Position = UDim2.fromScale(0.5, 0.5)
+MainFrame.Size = UDim2.fromOffset(340, 468)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 21)
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(62, 62, 70)
+MainStroke.Thickness = 1
+MainStroke.Transparency = 0.15
+MainStroke.Parent = MainFrame
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 42)
+TitleBar.BackgroundTransparency = 1
+TitleBar.Active = true
+TitleBar.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Position = UDim2.fromOffset(14, 0)
+Title.Size = UDim2.new(1, -58, 1, 0)
+Title.BackgroundTransparency = 1
+Title.Font = Enum.Font.GothamBold
+Title.Text = "STAFF BOARD TOOLS"
+Title.TextColor3 = Color3.fromRGB(238, 238, 242)
+Title.TextSize = 14
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Name = "CloseButton"
+CloseButton.AnchorPoint = Vector2.new(1, 0.5)
+CloseButton.Position = UDim2.new(1, -10, 0.5, 0)
+CloseButton.Size = UDim2.fromOffset(28, 28)
+CloseButton.BackgroundColor3 = Color3.fromRGB(38, 38, 44)
+CloseButton.BorderSizePixel = 0
+CloseButton.AutoButtonColor = false
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.Text = "×"
+CloseButton.TextColor3 = Color3.fromRGB(205, 205, 212)
+CloseButton.TextSize = 18
+CloseButton.Parent = TitleBar
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 8)
+CloseCorner.Parent = CloseButton
+
+local Divider = Instance.new("Frame")
+Divider.Position = UDim2.fromOffset(12, 42)
+Divider.Size = UDim2.new(1, -24, 0, 1)
+Divider.BackgroundColor3 = Color3.fromRGB(53, 53, 60)
+Divider.BorderSizePixel = 0
+Divider.Parent = MainFrame
+
+local AnswerGrid = Instance.new("Frame")
+AnswerGrid.Name = "AnswerGrid"
+AnswerGrid.Position = UDim2.fromOffset(17, 54)
+AnswerGrid.Size = UDim2.fromOffset(306, 306)
+AnswerGrid.BackgroundColor3 = Color3.fromRGB(29, 29, 34)
+AnswerGrid.BorderSizePixel = 0
+AnswerGrid.ClipsDescendants = true
+AnswerGrid.Parent = MainFrame
+
+local GridCorner = Instance.new("UICorner")
+GridCorner.CornerRadius = UDim.new(0, 7)
+GridCorner.Parent = AnswerGrid
+
+local GridLayout = Instance.new("UIGridLayout")
+GridLayout.CellPadding = UDim2.fromOffset(2, 2)
+GridLayout.CellSize = UDim2.fromOffset(32, 32)
+GridLayout.FillDirection = Enum.FillDirection.Horizontal
+GridLayout.FillDirectionMaxCells = 9
+GridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+GridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+GridLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+GridLayout.Parent = AnswerGrid
+
+local AnswerCells = {}
+
+for Index = 1, 81 do
+	local Row = math.floor((Index - 1) / 9) + 1
+	local Column = ((Index - 1) % 9) + 1
+	local BoxIsDark = (math.floor((Row - 1) / 3) + math.floor((Column - 1) / 3)) % 2 == 0
+	local AnswerCell = Instance.new("TextLabel")
+	AnswerCell.Name = tostring(Index)
+	AnswerCell.LayoutOrder = Index
+	AnswerCell.BackgroundColor3 = BoxIsDark and Color3.fromRGB(35, 35, 41) or Color3.fromRGB(42, 42, 49)
+	AnswerCell.BorderSizePixel = 0
+	AnswerCell.Font = Enum.Font.GothamBold
+	AnswerCell.Text = ""
+	AnswerCell.TextColor3 = Color3.fromRGB(225, 225, 232)
+	AnswerCell.TextSize = 15
+	AnswerCell.ZIndex = 2
+	AnswerCell.Parent = AnswerGrid
+	AnswerCells[Index] = AnswerCell
+end
+
+local ScanButton = Instance.new("TextButton")
+ScanButton.Name = "ScanButton"
+ScanButton.Position = UDim2.fromOffset(14, 374)
+ScanButton.Size = UDim2.fromOffset(151, 42)
+ScanButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+ScanButton.BorderSizePixel = 0
+ScanButton.AutoButtonColor = false
+ScanButton.Font = Enum.Font.GothamBold
+ScanButton.Text = "SCAN ANSWERS"
+ScanButton.TextColor3 = Color3.fromRGB(238, 238, 242)
+ScanButton.TextSize = 12
+ScanButton.Parent = MainFrame
+
+local ScanCorner = Instance.new("UICorner")
+ScanCorner.CornerRadius = UDim.new(0, 9)
+ScanCorner.Parent = ScanButton
+
+local AutoFinishButton = Instance.new("TextButton")
+AutoFinishButton.Name = "AutoFinishButton"
+AutoFinishButton.Position = UDim2.fromOffset(175, 374)
+AutoFinishButton.Size = UDim2.fromOffset(151, 42)
+AutoFinishButton.BackgroundColor3 = Color3.fromRGB(78, 105, 255)
+AutoFinishButton.BorderSizePixel = 0
+AutoFinishButton.AutoButtonColor = false
+AutoFinishButton.Font = Enum.Font.GothamBold
+AutoFinishButton.Text = "AUTO-FINISH"
+AutoFinishButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoFinishButton.TextSize = 12
+AutoFinishButton.Parent = MainFrame
+
+local AutoFinishCorner = Instance.new("UICorner")
+AutoFinishCorner.CornerRadius = UDim.new(0, 9)
+AutoFinishCorner.Parent = AutoFinishButton
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Name = "StatusLabel"
+StatusLabel.Position = UDim2.fromOffset(14, 426)
+StatusLabel.Size = UDim2.new(1, -28, 0, 28)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Text = "Ready — stand near the board"
+StatusLabel.TextColor3 = Color3.fromRGB(159, 159, 169)
+StatusLabel.TextSize = 12
+StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = MainFrame
+
+local ReopenButton = Instance.new("TextButton")
+ReopenButton.Name = "ReopenButton"
+ReopenButton.AnchorPoint = Vector2.new(0.5, 0)
+ReopenButton.Position = UDim2.new(0.5, 0, 0, 10)
+ReopenButton.Size = UDim2.fromOffset(112, 34)
+ReopenButton.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
+ReopenButton.BorderSizePixel = 0
+ReopenButton.AutoButtonColor = false
+ReopenButton.Font = Enum.Font.GothamBold
+ReopenButton.Text = "BOARD TOOLS"
+ReopenButton.TextColor3 = Color3.fromRGB(235, 235, 240)
+ReopenButton.TextSize = 11
+ReopenButton.Visible = false
+ReopenButton.Parent = ScreenGui
+
+local ReopenCorner = Instance.new("UICorner")
+ReopenCorner.CornerRadius = UDim.new(0, 10)
+ReopenCorner.Parent = ReopenButton
+
+local ReopenStroke = Instance.new("UIStroke")
+ReopenStroke.Color = Color3.fromRGB(64, 64, 72)
+ReopenStroke.Thickness = 1
+ReopenStroke.Parent = ReopenButton
+
+local Dragging = false
+local DragInput
+local DragStart
+local StartPosition
+
+local function UpdateDrag(Input)
+	local Delta = Input.Position - DragStart
+	MainFrame.Position = UDim2.new(
+		StartPosition.X.Scale,
+		StartPosition.X.Offset + Delta.X,
+		StartPosition.Y.Scale,
+		StartPosition.Y.Offset + Delta.Y
+	)
+end
+
+TitleBar.InputBegan:Connect(function(Input)
+	if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+		Dragging = true
+		DragStart = Input.Position
+		StartPosition = MainFrame.Position
+
+		Input.Changed:Connect(function()
+			if Input.UserInputState == Enum.UserInputState.End then
+				Dragging = false
+			end
+		end)
+	end
+end)
+
+TitleBar.InputChanged:Connect(function(Input)
+	if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
+		DragInput = Input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+	if Dragging and Input == DragInput then
+		UpdateDrag(Input)
+	end
+end)
+
+CloseButton.MouseButton1Click:Connect(function()
+	MainFrame.Visible = false
+	ReopenButton.Visible = true
+end)
+
+ReopenButton.MouseButton1Click:Connect(function()
+	ReopenButton.Visible = false
+	MainFrame.Visible = true
+end)
+
+local function GetBoardPosition(Board)
+	local Success, BoardPivot = pcall(function()
+		return Board:GetPivot()
+	end)
+
+	if Success then
+		return BoardPivot.Position
+	end
+
+	local BoardPart = Board:FindFirstChildWhichIsA("BasePart", true)
+	return BoardPart and BoardPart.Position or nil
+end
+
+local function GetBoardFrame(Board)
+	local SurfaceGui = Board:FindFirstChild("SurfaceGui")
+	return SurfaceGui and SurfaceGui:FindFirstChild("Frame") or nil
+end
+
+local function GetNearestBoard()
+	local Character = LocalPlayer.Character
+	local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+
+	if not RootPart then
+		return nil
+	end
+
+	local NearestBoard
+	local NearestDistance = math.huge
+
+	for _, Board in ipairs(PlacedBoards:GetChildren()) do
+		if GetBoardFrame(Board) then
+			local BoardPosition = GetBoardPosition(Board)
+
+			if BoardPosition then
+				local Distance = (RootPart.Position - BoardPosition).Magnitude
+
+				if Distance < NearestDistance then
+					NearestDistance = Distance
+					NearestBoard = Board
+				end
+			end
+		end
+	end
+
+	return NearestBoard, NearestDistance
+end
+
+local function ReadBoard(Board)
+	local BoardFrame = GetBoardFrame(Board)
+	if not BoardFrame then
+		return nil, nil, "The board's SurfaceGui.Frame is missing"
+	end
+
+	-- Cell names are internal IDs in this game and are not guaranteed to be
+	-- row-major. Read them by their rendered positions instead.
+	task.wait()
+
+	local CandidateCells = {}
+
+	for _, Child in ipairs(BoardFrame:GetChildren()) do
+		if Child:IsA("TextButton") and Child.Name ~= "ClueTemplate" and Child:FindFirstChild("ClueValue") then
+			table.insert(CandidateCells, Child)
+		end
+	end
+
+	if #CandidateCells ~= 81 then
+		return nil, nil, "Expected 81 squares, found " .. #CandidateCells
+	end
+
+	local MinimumX = math.huge
+	local MaximumX = -math.huge
+	local MinimumY = math.huge
+	local MaximumY = -math.huge
+
+	for _, Cell in ipairs(CandidateCells) do
+		local Position = Cell.AbsolutePosition
+		MinimumX = math.min(MinimumX, Position.X)
+		MaximumX = math.max(MaximumX, Position.X)
+		MinimumY = math.min(MinimumY, Position.Y)
+		MaximumY = math.max(MaximumY, Position.Y)
+	end
+
+	local OrderedCells = table.create(81)
+	local HasRenderedPositions = MaximumX - MinimumX > 2 and MaximumY - MinimumY > 2
+
+	if HasRenderedPositions then
+		table.sort(CandidateCells, function(First, Second)
+			return First.AbsolutePosition.Y < Second.AbsolutePosition.Y
+		end)
+
+		for Row = 1, 9 do
+			local RowCells = {}
+
+			for Column = 1, 9 do
+				table.insert(RowCells, CandidateCells[(Row - 1) * 9 + Column])
+			end
+
+			table.sort(RowCells, function(First, Second)
+				return First.AbsolutePosition.X < Second.AbsolutePosition.X
+			end)
+
+			for Column = 1, 9 do
+				OrderedCells[(Row - 1) * 9 + Column] = RowCells[Column]
+			end
+		end
+	else
+		table.sort(CandidateCells, function(First, Second)
+			if First.LayoutOrder ~= Second.LayoutOrder then
+				return First.LayoutOrder < Second.LayoutOrder
+			end
+
+			return (tonumber(First.Name) or math.huge) < (tonumber(Second.Name) or math.huge)
+		end)
+
+		OrderedCells = CandidateCells
+	end
+
+	local Grid = table.create(9)
+	local Cells = table.create(81)
+
+	for Row = 1, 9 do
+		Grid[Row] = table.create(9, 0)
+	end
+
+	for Index = 1, 81 do
+		local Cell = OrderedCells[Index]
+
+		local ClueValue = Cell:FindFirstChild("ClueValue")
+		if not ClueValue or not (ClueValue:IsA("TextLabel") or ClueValue:IsA("TextButton") or ClueValue:IsA("TextBox")) then
+			return nil, nil, "Cell " .. Cell.Name .. " has no readable ClueValue"
+		end
+
+		local Text = ClueValue.Text
+		local Value = Text:match("^%s*([1-9])%s*$")
+		local Row = math.floor((Index - 1) / 9) + 1
+		local Column = ((Index - 1) % 9) + 1
+
+		Grid[Row][Column] = Value and tonumber(Value) or 0
+		Cells[Index] = Cell
+	end
+
+	return Grid, Cells
+end
+
+local function CanPlace(Grid, Row, Column, Value)
+	for Index = 1, 9 do
+		if Grid[Row][Index] == Value or Grid[Index][Column] == Value then
+			return false
+		end
+	end
+
+	local BoxRow = math.floor((Row - 1) / 3) * 3 + 1
+	local BoxColumn = math.floor((Column - 1) / 3) * 3 + 1
+
+	for RowOffset = 0, 2 do
+		for ColumnOffset = 0, 2 do
+			if Grid[BoxRow + RowOffset][BoxColumn + ColumnOffset] == Value then
+				return false
+			end
+		end
+	end
+
+	return true
+end
+
+local function IsGridValid(Grid)
+	for Row = 1, 9 do
+		for Column = 1, 9 do
+			local Value = Grid[Row][Column]
+
+			if Value ~= 0 then
+				Grid[Row][Column] = 0
+				local Valid = CanPlace(Grid, Row, Column, Value)
+				Grid[Row][Column] = Value
+
+				if not Valid then
+					return false
+				end
+			end
+		end
+	end
+
+	return true
+end
+
+local function GetCandidates(Grid, Row, Column)
+	local Candidates = {}
+
+	for Value = 1, 9 do
+		if CanPlace(Grid, Row, Column, Value) then
+			table.insert(Candidates, Value)
+		end
+	end
+
+	return Candidates
+end
+
+local function SolveGrid(Grid)
+	local BestRow
+	local BestColumn
+	local BestCandidates
+
+	for Row = 1, 9 do
+		for Column = 1, 9 do
+			if Grid[Row][Column] == 0 then
+				local Candidates = GetCandidates(Grid, Row, Column)
+
+				if #Candidates == 0 then
+					return false
+				end
+
+				if not BestCandidates or #Candidates < #BestCandidates then
+					BestRow = Row
+					BestColumn = Column
+					BestCandidates = Candidates
+
+					if #Candidates == 1 then
+						break
+					end
+				end
+			end
+		end
+
+		if BestCandidates and #BestCandidates == 1 then
+			break
+		end
+	end
+
+	if not BestRow then
+		return true
+	end
+
+	for _, Value in ipairs(BestCandidates) do
+		Grid[BestRow][BestColumn] = Value
+
+		if SolveGrid(Grid) then
+			return true
+		end
+	end
+
+	Grid[BestRow][BestColumn] = 0
+	return false
+end
+
+local Busy = false
+
+local function SetBusy(IsBusy, Action)
+	Busy = IsBusy
+	ScanButton.Active = not IsBusy
+	AutoFinishButton.Active = not IsBusy
+	ScanButton.BackgroundColor3 = IsBusy and Color3.fromRGB(40, 40, 46) or Color3.fromRGB(48, 48, 57)
+	AutoFinishButton.BackgroundColor3 = IsBusy and Color3.fromRGB(65, 65, 72) or Color3.fromRGB(78, 105, 255)
+	ScanButton.Text = IsBusy and Action == "Scan" and "SCANNING..." or "SCAN ANSWERS"
+	AutoFinishButton.Text = IsBusy and Action == "Finish" and "FINISHING..." or "AUTO-FINISH"
+end
+
+local function ClearAnswerGrid()
+	for Index = 1, 81 do
+		AnswerCells[Index].Text = ""
+		AnswerCells[Index].TextColor3 = Color3.fromRGB(225, 225, 232)
+	end
+end
+
+local function SetError(Message)
+	StatusLabel.Text = Message
+	StatusLabel.TextColor3 = Color3.fromRGB(255, 125, 125)
+end
+
+local function ScanNearestBoard()
+	ClearAnswerGrid()
+	StatusLabel.TextColor3 = Color3.fromRGB(159, 159, 169)
+
+	local Board, Distance = GetNearestBoard()
+	if not Board then
+		SetError("No placed board was found")
+		return nil
+	end
+
+	StatusLabel.Text = string.format("Reading nearest board (%.1f studs)...", Distance)
+
+	local Grid, Cells, ReadError = ReadBoard(Board)
+	if not Grid then
+		SetError(ReadError)
+		return nil
+	end
+
+	if not IsGridValid(Grid) then
+		SetError("Existing numbers conflict with each other")
+		return nil
+	end
+
+	local BlankIndices = {}
+	local BlankLookup = {}
+
+	for Index = 1, 81 do
+		local Row = math.floor((Index - 1) / 9) + 1
+		local Column = ((Index - 1) % 9) + 1
+
+		if Grid[Row][Column] == 0 then
+			table.insert(BlankIndices, Index)
+			BlankLookup[Index] = true
+		end
+	end
+
+	StatusLabel.Text = "Calculating solution..."
+	if not SolveGrid(Grid) then
+		SetError("This board has no valid solution")
+		return nil
+	end
+
+	for Index = 1, 81 do
+		local Row = math.floor((Index - 1) / 9) + 1
+		local Column = ((Index - 1) % 9) + 1
+		AnswerCells[Index].Text = tostring(Grid[Row][Column])
+		AnswerCells[Index].TextColor3 = BlankLookup[Index]
+			and Color3.fromRGB(125, 165, 255)
+			or Color3.fromRGB(238, 238, 242)
+	end
+
+	StatusLabel.TextColor3 = Color3.fromRGB(130, 235, 160)
+	StatusLabel.Text = #BlankIndices == 0
+		and "Board is already complete"
+		or string.format("Answers found — %d blank cells", #BlankIndices)
+
+	return {
+		Board = Board,
+		Grid = Grid,
+		Cells = Cells,
+		BlankIndices = BlankIndices,
+	}
+end
+
+ScanButton.MouseButton1Click:Connect(function()
+	if Busy then
+		return
+	end
+
+	SetBusy(true, "Scan")
+	ScanNearestBoard()
+	SetBusy(false)
+end)
+
+AutoFinishButton.MouseButton1Click:Connect(function()
+	if Busy then
+		return
+	end
+
+	SetBusy(true, "Finish")
+	local Scan = ScanNearestBoard()
+
+	if not Scan then
+		SetBusy(false)
+		return
+	end
+
+	if #Scan.BlankIndices == 0 then
+		SetBusy(false)
+		return
+	end
+
+	for Completed, Index in ipairs(Scan.BlankIndices) do
+		local Board = Scan.Board
+
+		if not Board.Parent then
+			SetError("The board was removed")
+			SetBusy(false)
+			return
+		end
+
+		local Row = math.floor((Index - 1) / 9) + 1
+		local Column = ((Index - 1) % 9) + 1
+		StatusLabel.TextColor3 = Color3.fromRGB(159, 159, 169)
+		StatusLabel.Text = string.format("Filling board... %d/%d", Completed, #Scan.BlankIndices)
+		PlaceNumberRemote:FireServer(Scan.Cells[Index], Scan.Grid[Row][Column])
+		task.wait(SubmitDelay)
+	end
+
+	StatusLabel.Text = "Board solution submitted"
+	StatusLabel.TextColor3 = Color3.fromRGB(130, 235, 160)
+	SetBusy(false)
+end)
