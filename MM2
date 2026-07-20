@@ -17,6 +17,7 @@ local SpectatorTransparency = 0.55
 local SpectatorMoveSpeed = 22
 local SpectatorVerticalSpeed = 18
 local SpectatorHotkey = Enum.KeyCode.V
+local InnocentVisualColor = Color3.fromRGB(235, 235, 245)
 local WaitingForSpectatorHotkey = false
 local LastTouchPosition = Vector2.new(CurrentCamera.ViewportSize.X / 2, CurrentCamera.ViewportSize.Y / 2)
 local LastShotTime = 0
@@ -28,9 +29,11 @@ local MaximumHorizontalVelocity = 110
 local MaximumVerticalVelocity = 125
 local SpectatorRenderBindingName = "_StaffSpectatorView_" .. tostring(LocalPlayer.UserId)
 local SpectatorFinalBindingName = SpectatorRenderBindingName .. "_Final"
+local SpectatorBodyBindingName = SpectatorRenderBindingName .. "_Body"
 
 RunService:UnbindFromRenderStep(SpectatorRenderBindingName)
 RunService:UnbindFromRenderStep(SpectatorFinalBindingName)
+RunService:UnbindFromRenderStep(SpectatorBodyBindingName)
 
 local ExistingGui = PlayerGui:FindFirstChild("GunNearestToggleStaff")
 if ExistingGui then
@@ -368,6 +371,8 @@ local SpectatorRealRoot
 local SpectatorOriginalCameraSubject
 local SpectatorOriginalCameraType
 local SpectatorPartStates = {}
+local SpectatorHumanoidStates = {}
+local SpectatorCameraConnections = {}
 local SpectatorPreviousTargeting = false
 local SpectatorAnimationTracks = {}
 local SpectatorAnimationName
@@ -557,8 +562,9 @@ local function UpdateRoleVisual(Player)
 	elseif HasGun then
 		OutlineColor = Color3.fromRGB(55, 135, 255)
 	else
-		ClearRoleHighlight(Player)
-		return
+		-- Regular players keep the neutral visual. Murderer and sheriff
+		-- are detected first so this never replaces their role colors.
+		OutlineColor = InnocentVisualColor
 	end
 
 	local Highlight = RoleHighlights[Player]
@@ -920,6 +926,53 @@ local function ClearCharacterVelocity(Character)
 	end
 end
 
+local function ApplySpectatorHumanoidProtection(Humanoid)
+	if not Humanoid then
+		return
+	end
+
+	if not SpectatorHumanoidStates[Humanoid] then
+		local DeadStateEnabled = true
+		pcall(function()
+			DeadStateEnabled = Humanoid:GetStateEnabled(Enum.HumanoidStateType.Dead)
+		end)
+
+		SpectatorHumanoidStates[Humanoid] = {
+			BreakJointsOnDeath = Humanoid.BreakJointsOnDeath,
+			AutoRotate = Humanoid.AutoRotate,
+			DeadStateEnabled = DeadStateEnabled,
+		}
+	end
+
+	Humanoid.BreakJointsOnDeath = false
+	Humanoid.AutoRotate = false
+	pcall(function()
+		Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+	end)
+end
+
+local function RestoreSpectatorHumanoidStates()
+	for Humanoid, State in pairs(SpectatorHumanoidStates) do
+		if Humanoid and Humanoid.Parent then
+			Humanoid.BreakJointsOnDeath = State.BreakJointsOnDeath
+			Humanoid.AutoRotate = State.AutoRotate
+			pcall(function()
+				Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, State.DeadStateEnabled)
+			end)
+		end
+	end
+
+	table.clear(SpectatorHumanoidStates)
+end
+
+local function DisconnectSpectatorCameraConnections()
+	for _, Connection in ipairs(SpectatorCameraConnections) do
+		Connection:Disconnect()
+	end
+
+	table.clear(SpectatorCameraConnections)
+end
+
 local function RestoreSpectatorPartStates()
 	for Part, State in pairs(SpectatorPartStates) do
 		if Part and Part.Parent then
@@ -941,6 +994,9 @@ local function MoveRealCharacterBelowPreview(PreviewCFrame)
 		return
 	end
 
+	local RealHumanoid = RealCharacter:FindFirstChildOfClass("Humanoid")
+	ApplySpectatorHumanoidProtection(RealHumanoid)
+
 	for _, Descendant in ipairs(RealCharacter:GetDescendants()) do
 		if Descendant:IsA("BasePart") then
 			if not SpectatorPartStates[Descendant] then
@@ -960,10 +1016,41 @@ local function MoveRealCharacterBelowPreview(PreviewCFrame)
 	end
 
 	local BelowPosition = PreviewCFrame.Position - Vector3.new(0, SpectatorDepth, 0)
+	local MinimumSafeY = workspace.FallenPartsDestroyHeight + 8
+	if BelowPosition.Y <= MinimumSafeY then
+		BelowPosition = Vector3.new(BelowPosition.X, MinimumSafeY, BelowPosition.Z)
+	end
+
 	local BelowCFrame = CFrame.new(BelowPosition) * PreviewCFrame.Rotation
 
+	RealRoot.AssemblyLinearVelocity = Vector3.zero
+	RealRoot.AssemblyAngularVelocity = Vector3.zero
 	RealCharacter:PivotTo(BelowCFrame)
 	RealRoot.CFrame = BelowCFrame
+	RealRoot.AssemblyLinearVelocity = Vector3.zero
+	RealRoot.AssemblyAngularVelocity = Vector3.zero
+end
+
+local function AdoptCurrentCharacterForSpectator(PreviewCFrame)
+	local CurrentCharacter = LocalPlayer.Character
+	local CurrentHumanoid = CurrentCharacter and CurrentCharacter:FindFirstChildOfClass("Humanoid")
+	local CurrentRoot = CurrentCharacter and CurrentCharacter:FindFirstChild("HumanoidRootPart")
+
+	if not CurrentCharacter or not CurrentCharacter.Parent or not CurrentHumanoid or not CurrentRoot then
+		return false
+	end
+
+	if CurrentCharacter ~= SpectatorRealCharacter or CurrentRoot ~= SpectatorRealRoot then
+		RestoreSpectatorPartStates()
+		RestoreSpectatorHumanoidStates()
+		SpectatorRealCharacter = CurrentCharacter
+		SpectatorRealRoot = CurrentRoot
+		table.clear(SpectatorPartStates)
+	end
+
+	ApplySpectatorHumanoidProtection(CurrentHumanoid)
+	MoveRealCharacterBelowPreview(PreviewCFrame)
+	return true
 end
 
 local function DisableSpectator()
@@ -979,6 +1066,8 @@ local function DisableSpectator()
 	SetSpectatorButtonState(false)
 	RunService:UnbindFromRenderStep(SpectatorRenderBindingName)
 	RunService:UnbindFromRenderStep(SpectatorFinalBindingName)
+	RunService:UnbindFromRenderStep(SpectatorBodyBindingName)
+	DisconnectSpectatorCameraConnections()
 
 	if RealCharacter and RealCharacter.Parent then
 		ClearCharacterVelocity(RealCharacter)
@@ -989,6 +1078,7 @@ local function DisableSpectator()
 
 		ClearCharacterVelocity(RealCharacter)
 		RestoreSpectatorPartStates()
+		RestoreSpectatorHumanoidStates()
 		ClearCharacterVelocity(RealCharacter)
 
 		task.defer(function()
@@ -999,6 +1089,7 @@ local function DisableSpectator()
 
 	else
 		table.clear(SpectatorPartStates)
+		RestoreSpectatorHumanoidStates()
 	end
 
 	CurrentCamera = workspace.CurrentCamera or CurrentCamera
@@ -1134,6 +1225,7 @@ local function EnableSpectator()
 	SpectatorOriginalCameraType = CurrentCamera.CameraType
 	SpectatorPreviousTargeting = TargetingEnabled
 	SpectatorEnabled = true
+	ApplySpectatorHumanoidProtection(RealHumanoid)
 
 	MoveRealCharacterBelowPreview(PreviewStartCFrame)
 	SetTargetingState(false, "Spectator active")
@@ -1142,6 +1234,18 @@ local function EnableSpectator()
 	CurrentCamera.CameraSubject = CloneHumanoid
 	RunService:UnbindFromRenderStep(SpectatorRenderBindingName)
 	RunService:UnbindFromRenderStep(SpectatorFinalBindingName)
+	RunService:UnbindFromRenderStep(SpectatorBodyBindingName)
+	DisconnectSpectatorCameraConnections()
+
+	local function EnforceSpectatorBody()
+		if not SpectatorEnabled or not SpectatorClone or not SpectatorClone.Parent then
+			return
+		end
+
+		local PreviewCFrame = SpectatorClone:GetPivot()
+		AdoptCurrentCharacterForSpectator(PreviewCFrame)
+		MoveRealCharacterBelowPreview(PreviewCFrame)
+	end
 
 	local function EnforceSpectatorView()
 		if not SpectatorEnabled or not SpectatorClone or not SpectatorClone.Parent then
@@ -1153,14 +1257,28 @@ local function EnableSpectator()
 
 		if PreviewHumanoid then
 			CurrentCamera.CameraType = Enum.CameraType.Custom
-			CurrentCamera.CameraSubject = PreviewHumanoid
+			if CurrentCamera.CameraSubject ~= PreviewHumanoid then
+				CurrentCamera.CameraSubject = PreviewHumanoid
+			end
 		end
 
-		MoveRealCharacterBelowPreview(SpectatorClone:GetPivot())
+		EnforceSpectatorBody()
 	end
 
+	RunService:BindToRenderStep(SpectatorBodyBindingName, Enum.RenderPriority.First.Value, EnforceSpectatorBody)
 	RunService:BindToRenderStep(SpectatorRenderBindingName, Enum.RenderPriority.Camera.Value - 1, EnforceSpectatorView)
 	RunService:BindToRenderStep(SpectatorFinalBindingName, Enum.RenderPriority.Last.Value, EnforceSpectatorView)
+
+	table.insert(SpectatorCameraConnections, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		CurrentCamera = workspace.CurrentCamera or CurrentCamera
+		EnforceSpectatorView()
+	end))
+
+	table.insert(SpectatorCameraConnections, CurrentCamera:GetPropertyChangedSignal("CameraSubject"):Connect(function()
+		if SpectatorEnabled then
+			EnforceSpectatorView()
+		end
+	end))
 
 	StatusLabel.Text = "Spectator active — preview is local only"
 	StatusLabel.TextColor3 = Color3.fromRGB(185, 145, 255)
@@ -1172,14 +1290,27 @@ local function UpdateSpectator(DeltaTime)
 	end
 
 	local Clone = SpectatorClone
+
+	if Clone and Clone.Parent and LocalPlayer.Character ~= SpectatorRealCharacter then
+		AdoptCurrentCharacterForSpectator(Clone:GetPivot())
+	end
+
 	local RealCharacter = SpectatorRealCharacter
 	local RealRoot = SpectatorRealRoot
 	local RealHumanoid = RealCharacter and RealCharacter:FindFirstChildOfClass("Humanoid")
 	local CloneHumanoid = Clone and Clone:FindFirstChildOfClass("Humanoid")
 	local CloneRoot = Clone and Clone:FindFirstChild("HumanoidRootPart")
 
-	if not Clone or not Clone.Parent or not CloneHumanoid or not CloneRoot or not RealCharacter or not RealCharacter.Parent or not RealHumanoid or not RealRoot or not RealRoot.Parent then
+	if not Clone or not Clone.Parent or not CloneHumanoid or not CloneRoot then
 		DisableSpectator()
+		return
+	end
+
+	-- Keep the preview and camera alive while Roblox replaces the real character.
+	-- The new character is adopted and moved underneath as soon as it exists.
+	if not RealCharacter or not RealCharacter.Parent or not RealHumanoid or not RealRoot or not RealRoot.Parent or RealHumanoid.Health <= 0 then
+		StatusLabel.Text = "Spectator active — recovering character"
+		StatusLabel.TextColor3 = Color3.fromRGB(185, 145, 255)
 		return
 	end
 
