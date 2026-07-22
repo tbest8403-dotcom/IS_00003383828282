@@ -27,6 +27,13 @@ local MaximumPrediction = 0.30
 local PredictionTime = 0.09
 local MaximumHorizontalVelocity = 110
 local MaximumVerticalVelocity = 125
+local PredictionVelocitySmoothing = 24
+local PredictionAccelerationLimit = 220
+local PredictionTeleportDistance = 14
+local PredictionIdleSpeed = 0.75
+local PredictionRunSpeed = 19.5
+local PredictionHistoryLimit = 8
+local PredictionTrackers = setmetatable({}, { __mode = "k" })
 local SpectatorRenderBindingName = "_StaffSpectatorView_" .. tostring(LocalPlayer.UserId)
 local SpectatorFinalBindingName = SpectatorRenderBindingName .. "_Final"
 local SpectatorBodyBindingName = SpectatorRenderBindingName .. "_Body"
@@ -123,11 +130,27 @@ local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 MainFrame.Position = UDim2.fromScale(0.5, 0.28)
-MainFrame.Size = UDim2.fromOffset(286, 264)
+MainFrame.Size = UDim2.fromOffset(286, 410)
 MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 21)
 MainFrame.BorderSizePixel = 0
 MainFrame.ZIndex = 30
 MainFrame.Parent = ScreenGui
+
+local MainScale = Instance.new("UIScale")
+MainScale.Scale = 1
+MainScale.Parent = MainFrame
+
+local function UpdateMainScale()
+	CurrentCamera = workspace.CurrentCamera or CurrentCamera
+	local ViewportSize = CurrentCamera.ViewportSize
+	MainScale.Scale = math.clamp(math.min(
+		(ViewportSize.X - 16) / 286,
+		(ViewportSize.Y - 16) / 410
+	), 0.64, 1)
+end
+
+UpdateMainScale()
+CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateMainScale)
 
 local MainCorner = Instance.new("UICorner")
 MainCorner.CornerRadius = UDim.new(0, 12)
@@ -327,6 +350,84 @@ StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 StatusLabel.ZIndex = 31
 StatusLabel.Parent = MainFrame
 
+local TrackingCard = Instance.new("Frame")
+TrackingCard.Name = "TrackingCard"
+TrackingCard.Position = UDim2.fromOffset(14, 250)
+TrackingCard.Size = UDim2.new(1, -28, 0, 144)
+TrackingCard.BackgroundColor3 = Color3.fromRGB(24, 24, 29)
+TrackingCard.BorderSizePixel = 0
+TrackingCard.ZIndex = 31
+TrackingCard.Parent = MainFrame
+
+local TrackingCardCorner = Instance.new("UICorner")
+TrackingCardCorner.CornerRadius = UDim.new(0, 10)
+TrackingCardCorner.Parent = TrackingCard
+
+local TrackingCardStroke = Instance.new("UIStroke")
+TrackingCardStroke.Color = Color3.fromRGB(56, 56, 65)
+TrackingCardStroke.Thickness = 1
+TrackingCardStroke.Transparency = 0.3
+TrackingCardStroke.Parent = TrackingCard
+
+local TrackingTitle = Instance.new("TextLabel")
+TrackingTitle.Position = UDim2.fromOffset(10, 7)
+TrackingTitle.Size = UDim2.new(0.5, -10, 0, 16)
+TrackingTitle.BackgroundTransparency = 1
+TrackingTitle.Font = Enum.Font.GothamBold
+TrackingTitle.Text = "LIVE TRACKING"
+TrackingTitle.TextColor3 = Color3.fromRGB(225, 225, 232)
+TrackingTitle.TextSize = 10
+TrackingTitle.TextXAlignment = Enum.TextXAlignment.Left
+TrackingTitle.ZIndex = 32
+TrackingTitle.Parent = TrackingCard
+
+local TrackingValidity = Instance.new("TextLabel")
+TrackingValidity.AnchorPoint = Vector2.new(1, 0)
+TrackingValidity.Position = UDim2.new(1, -10, 0, 7)
+TrackingValidity.Size = UDim2.fromOffset(106, 16)
+TrackingValidity.BackgroundTransparency = 1
+TrackingValidity.Font = Enum.Font.GothamBold
+TrackingValidity.Text = "NO PLAYER"
+TrackingValidity.TextColor3 = Color3.fromRGB(150, 150, 161)
+TrackingValidity.TextSize = 9
+TrackingValidity.TextXAlignment = Enum.TextXAlignment.Right
+TrackingValidity.ZIndex = 32
+TrackingValidity.Parent = TrackingCard
+
+local TrackingPlayerLabel = Instance.new("TextLabel")
+TrackingPlayerLabel.Position = UDim2.fromOffset(10, 26)
+TrackingPlayerLabel.Size = UDim2.new(1, -20, 0, 20)
+TrackingPlayerLabel.BackgroundTransparency = 1
+TrackingPlayerLabel.Font = Enum.Font.GothamSemibold
+TrackingPlayerLabel.Text = "Hover the circle over a player"
+TrackingPlayerLabel.TextColor3 = Color3.fromRGB(195, 195, 205)
+TrackingPlayerLabel.TextSize = 11
+TrackingPlayerLabel.TextTruncate = Enum.TextTruncate.AtEnd
+TrackingPlayerLabel.TextXAlignment = Enum.TextXAlignment.Left
+TrackingPlayerLabel.ZIndex = 32
+TrackingPlayerLabel.Parent = TrackingCard
+
+local TrackingDivider = Instance.new("Frame")
+TrackingDivider.Position = UDim2.fromOffset(10, 49)
+TrackingDivider.Size = UDim2.new(1, -20, 0, 1)
+TrackingDivider.BackgroundColor3 = Color3.fromRGB(49, 49, 58)
+TrackingDivider.BorderSizePixel = 0
+TrackingDivider.ZIndex = 32
+TrackingDivider.Parent = TrackingCard
+
+local TrackingDataLabel = Instance.new("TextLabel")
+TrackingDataLabel.Position = UDim2.fromOffset(10, 56)
+TrackingDataLabel.Size = UDim2.new(1, -20, 0, 79)
+TrackingDataLabel.BackgroundTransparency = 1
+TrackingDataLabel.Font = Enum.Font.Code
+TrackingDataLabel.Text = "STATE    --\nSPEED    --        VERTICAL  --\nSTRAFE   --\nJUMP     --\nLEAD     --"
+TrackingDataLabel.TextColor3 = Color3.fromRGB(184, 184, 196)
+TrackingDataLabel.TextSize = 10
+TrackingDataLabel.TextXAlignment = Enum.TextXAlignment.Left
+TrackingDataLabel.TextYAlignment = Enum.TextYAlignment.Top
+TrackingDataLabel.ZIndex = 32
+TrackingDataLabel.Parent = TrackingCard
+
 local ReopenButton = Instance.new("TextButton")
 ReopenButton.Name = "ReopenButton"
 ReopenButton.AnchorPoint = Vector2.new(0.5, 0)
@@ -360,6 +461,7 @@ local SliderDragging = false
 local SliderInput
 local CurrentTargetPlayer
 local CurrentTargetPart
+local CurrentHoveredPlayer
 local CurrentHighlight
 local RenderConnection
 local OriginalManualActivation = setmetatable({}, { __mode = "k" })
@@ -624,6 +726,348 @@ local function HasClearShot(OriginPosition, TargetCharacter, TargetPosition)
 	return Result == nil or Result.Instance:IsDescendantOf(TargetCharacter)
 end
 
+local function ClampVectorMagnitude(Value, MaximumMagnitude)
+	local Magnitude = Value.Magnitude
+	if Magnitude > MaximumMagnitude and Magnitude > 0 then
+		return Value.Unit * MaximumMagnitude
+	end
+	return Value
+end
+
+local function PushPredictionHistory(History, Value)
+	table.insert(History, Value)
+	if #History > PredictionHistoryLimit then
+		table.remove(History, 1)
+	end
+end
+
+local function GetHistoryAverage(History)
+	if #History == 0 then
+		return nil, nil
+	end
+
+	local Sum = 0
+	for _, Value in ipairs(History) do
+		Sum += Value
+	end
+
+	local Average = Sum / #History
+	local Variance = 0
+	for _, Value in ipairs(History) do
+		Variance += (Value - Average) ^ 2
+	end
+
+	return Average, math.sqrt(Variance / #History)
+end
+
+local function IsCharacterAirborne(Humanoid)
+	local State = Humanoid:GetState()
+	return Humanoid.FloorMaterial == Enum.Material.Air
+		or State == Enum.HumanoidStateType.Jumping
+		or State == Enum.HumanoidStateType.Freefall
+		or State == Enum.HumanoidStateType.FallingDown
+end
+
+local function GetPredictionMovementState(Humanoid, HorizontalSpeed, VerticalVelocity, Airborne)
+	if Airborne then
+		local HorizontalName = HorizontalSpeed >= PredictionRunSpeed and "RunJump" or "Jump"
+		if VerticalVelocity > 1.25 then
+			return HorizontalName .. "Rising"
+		elseif VerticalVelocity < -1.25 then
+			return HorizontalName .. "Falling"
+		end
+		return HorizontalName .. "Apex"
+	end
+
+	if HorizontalSpeed <= PredictionIdleSpeed and Humanoid.MoveDirection.Magnitude <= 0.04 then
+		return "Idle"
+	elseif HorizontalSpeed >= PredictionRunSpeed then
+		return "Run"
+	end
+	return "Walk"
+end
+
+local function CreatePredictionTracker(TargetCharacter, Humanoid, RootPart, Now)
+	local RawVelocity = RootPart.AssemblyLinearVelocity
+	local HorizontalVelocity = ClampVectorMagnitude(Vector3.new(RawVelocity.X, 0, RawVelocity.Z), MaximumHorizontalVelocity)
+	local Airborne = IsCharacterAirborne(Humanoid)
+
+	local Tracker = {
+		LastUpdate = Now,
+		LastPosition = RootPart.Position,
+		SmoothedHorizontalVelocity = HorizontalVelocity,
+		HorizontalAcceleration = Vector3.zero,
+		VerticalVelocity = math.clamp(RawVelocity.Y, -MaximumVerticalVelocity, MaximumVerticalVelocity),
+		LastDirection = HorizontalVelocity.Magnitude > 1 and HorizontalVelocity.Unit or Vector3.zero,
+		Airborne = Airborne,
+		MovementState = GetPredictionMovementState(Humanoid, HorizontalVelocity.Magnitude, RawVelocity.Y, Airborne),
+		StableDirectionTime = 0,
+		LastFlipAt = nil,
+		FlipIntervals = {},
+		StrafeScore = 0,
+		LastTakeoffAt = nil,
+		LastLandingAt = nil,
+		JumpIntervals = {},
+		TakeoffVelocities = {},
+	}
+
+	PredictionTrackers[TargetCharacter] = Tracker
+	return Tracker
+end
+
+local function UpdatePredictionTracker(TargetCharacter, Humanoid, RootPart)
+	local Now = os.clock()
+	local Tracker = PredictionTrackers[TargetCharacter]
+	if not Tracker then
+		return CreatePredictionTracker(TargetCharacter, Humanoid, RootPart, Now)
+	end
+
+	local DeltaTime = Now - Tracker.LastUpdate
+	if DeltaTime < 1 / 240 then
+		return Tracker
+	end
+
+	local RawVelocity = RootPart.AssemblyLinearVelocity
+	local PositionDelta = (RootPart.Position - Tracker.LastPosition).Magnitude
+	local ExpectedTravel = math.max(0, RawVelocity.Magnitude * DeltaTime)
+	if DeltaTime > 0.35 or PositionDelta > math.max(PredictionTeleportDistance, ExpectedTravel * 2.5 + 5) then
+		return CreatePredictionTracker(TargetCharacter, Humanoid, RootPart, Now)
+	end
+
+	local RawHorizontalVelocity = ClampVectorMagnitude(
+		Vector3.new(RawVelocity.X, 0, RawVelocity.Z),
+		MaximumHorizontalVelocity
+	)
+	local HorizontalSpeed = RawHorizontalVelocity.Magnitude
+	local CurrentDirection = HorizontalSpeed > 1 and RawHorizontalVelocity.Unit or Vector3.zero
+	local PreviousHorizontalVelocity = Tracker.SmoothedHorizontalVelocity
+	local DirectionDot = 1
+
+	if CurrentDirection.Magnitude > 0 and Tracker.LastDirection.Magnitude > 0 then
+		DirectionDot = CurrentDirection:Dot(Tracker.LastDirection)
+	end
+
+	local ReversedDirection = HorizontalSpeed > 3
+		and Tracker.LastDirection.Magnitude > 0
+		and DirectionDot < -0.35
+	local SharpDirectionChange = HorizontalSpeed > 3
+		and Tracker.LastDirection.Magnitude > 0
+		and DirectionDot < 0.20
+
+	Tracker.StrafeScore = math.max(0, Tracker.StrafeScore - DeltaTime * 0.9)
+
+	if ReversedDirection then
+		if Tracker.LastFlipAt then
+			local FlipInterval = Now - Tracker.LastFlipAt
+			if FlipInterval >= 0.08 and FlipInterval <= 1.5 then
+				PushPredictionHistory(Tracker.FlipIntervals, FlipInterval)
+			end
+		end
+		Tracker.LastFlipAt = Now
+		Tracker.StrafeScore = math.min(4, Tracker.StrafeScore + 1.25)
+		Tracker.StableDirectionTime = 0
+	elseif SharpDirectionChange then
+		Tracker.StableDirectionTime = 0
+	else
+		Tracker.StableDirectionTime += DeltaTime
+	end
+
+	local SmoothingAlpha = 1 - math.exp(-PredictionVelocitySmoothing * DeltaTime)
+	if SharpDirectionChange then
+		-- Never drag velocity from the old direction into a new left-right strafe.
+		Tracker.SmoothedHorizontalVelocity = RawHorizontalVelocity
+		Tracker.HorizontalAcceleration = Vector3.zero
+	else
+		Tracker.SmoothedHorizontalVelocity = PreviousHorizontalVelocity:Lerp(RawHorizontalVelocity, SmoothingAlpha)
+		local MeasuredAcceleration = (Tracker.SmoothedHorizontalVelocity - PreviousHorizontalVelocity) / DeltaTime
+		Tracker.HorizontalAcceleration = ClampVectorMagnitude(MeasuredAcceleration, PredictionAccelerationLimit)
+	end
+
+	if HorizontalSpeed <= PredictionIdleSpeed then
+		local IdleAlpha = 1 - math.exp(-42 * DeltaTime)
+		Tracker.SmoothedHorizontalVelocity = Tracker.SmoothedHorizontalVelocity:Lerp(Vector3.zero, IdleAlpha)
+		Tracker.HorizontalAcceleration = Vector3.zero
+	end
+
+	local Airborne = IsCharacterAirborne(Humanoid)
+	local VerticalVelocity = math.clamp(RawVelocity.Y, -MaximumVerticalVelocity, MaximumVerticalVelocity)
+
+	if Airborne and not Tracker.Airborne and VerticalVelocity > 0.5 then
+		if Tracker.LastTakeoffAt then
+			local JumpInterval = Now - Tracker.LastTakeoffAt
+			if JumpInterval >= 0.20 and JumpInterval <= 3 then
+				PushPredictionHistory(Tracker.JumpIntervals, JumpInterval)
+			end
+		end
+		Tracker.LastTakeoffAt = Now
+		PushPredictionHistory(Tracker.TakeoffVelocities, VerticalVelocity)
+	elseif not Airborne and Tracker.Airborne then
+		Tracker.LastLandingAt = Now
+	end
+
+	Tracker.LastUpdate = Now
+	Tracker.LastPosition = RootPart.Position
+	Tracker.LastDirection = CurrentDirection.Magnitude > 0 and CurrentDirection or Tracker.LastDirection
+	Tracker.VerticalVelocity = VerticalVelocity
+	Tracker.Airborne = Airborne
+	Tracker.MovementState = GetPredictionMovementState(Humanoid, HorizontalSpeed, VerticalVelocity, Airborne)
+	return Tracker
+end
+
+local function GetStrafeAwareHorizontalDisplacement(Tracker, PredictionDuration)
+	if Tracker.MovementState == "Idle" then
+		return Vector3.zero
+	end
+
+	local Velocity = Tracker.SmoothedHorizontalVelocity
+	local Acceleration = Tracker.HorizontalAcceleration
+	if Velocity.Magnitude <= PredictionIdleSpeed then
+		return Vector3.zero
+	end
+
+	local AverageFlipInterval, FlipDeviation = GetHistoryAverage(Tracker.FlipIntervals)
+	local HasReliableStrafeCycle = Tracker.StrafeScore >= 1.5
+		and AverageFlipInterval
+		and #Tracker.FlipIntervals >= 2
+		and FlipDeviation <= AverageFlipInterval * 0.42
+
+	if HasReliableStrafeCycle and Tracker.LastFlipAt then
+		local Displacement = Vector3.zero
+		local RemainingTime = PredictionDuration
+		local TimeSinceFlip = os.clock() - Tracker.LastFlipAt
+		local TimeUntilFlip = math.max(0.01, AverageFlipInterval - TimeSinceFlip)
+		local SegmentVelocity = Velocity
+		local SegmentCount = 0
+
+		while RemainingTime > 0 and SegmentCount < 4 do
+			SegmentCount += 1
+			local SegmentTime = math.min(RemainingTime, TimeUntilFlip)
+			Displacement += SegmentVelocity * SegmentTime
+			RemainingTime -= SegmentTime
+			if RemainingTime > 0 then
+				SegmentVelocity = -SegmentVelocity
+				TimeUntilFlip = AverageFlipInterval
+			end
+		end
+
+		return Displacement
+	end
+
+	-- Acceleration helps with normal starts, but is disabled for irregular strafing.
+	local AccelerationInfluence = Tracker.StrafeScore < 0.75
+		and math.clamp(Tracker.StableDirectionTime / 0.12, 0, 1)
+		or 0
+	local Displacement = Velocity * PredictionDuration
+		+ 0.5 * Acceleration * PredictionDuration * PredictionDuration * AccelerationInfluence
+
+	if Tracker.StrafeScore >= 1.5 and not HasReliableStrafeCycle then
+		-- Their next reversal is unpredictable, so reduce only the uncertain part of the lead.
+		local UncertaintyScale = math.clamp(1 - Tracker.StrafeScore * 0.09, 0.68, 0.92)
+		Displacement *= UncertaintyScale
+	end
+
+	return Displacement
+end
+
+local function ResolveHorizontalCollision(TargetCharacter, RootPart, HorizontalDisplacement)
+	if HorizontalDisplacement.Magnitude <= 0.01 then
+		return HorizontalDisplacement
+	end
+
+	local RaycastParameters = RaycastParams.new()
+	RaycastParameters.FilterType = Enum.RaycastFilterType.Exclude
+	RaycastParameters.FilterDescendantsInstances = LocalPlayer.Character
+		and { TargetCharacter, LocalPlayer.Character }
+		or { TargetCharacter }
+	RaycastParameters.IgnoreWater = true
+
+	local Result = workspace:Raycast(RootPart.Position, HorizontalDisplacement, RaycastParameters)
+	if not Result then
+		return HorizontalDisplacement
+	end
+
+	local SafetyDistance = math.max(RootPart.Size.X, RootPart.Size.Z) * 0.5
+	local AllowedDistance = math.max(0, Result.Distance - SafetyDistance)
+	return HorizontalDisplacement.Unit * AllowedDistance
+end
+
+local function GetPredictionFloorRootY(TargetCharacter, Humanoid, RootPart, HorizontalPosition)
+	local RootClearance = math.max(1.5, Humanoid.HipHeight + RootPart.Size.Y * 0.5)
+	local ProbeOrigin = Vector3.new(HorizontalPosition.X, RootPart.Position.Y + 3, HorizontalPosition.Z)
+	local ProbeDistance = 40
+
+	local RaycastParameters = RaycastParams.new()
+	RaycastParameters.FilterType = Enum.RaycastFilterType.Exclude
+	RaycastParameters.FilterDescendantsInstances = LocalPlayer.Character
+		and { TargetCharacter, LocalPlayer.Character }
+		or { TargetCharacter }
+	RaycastParameters.IgnoreWater = true
+
+	local Result = workspace:Raycast(ProbeOrigin, Vector3.new(0, -ProbeDistance, 0), RaycastParameters)
+	if Result and Result.Normal.Y >= 0.45 then
+		return Result.Position.Y + RootClearance
+	end
+	return nil
+end
+
+local function GetJumpAwareVerticalDisplacement(TargetCharacter, Humanoid, RootPart, Tracker, HorizontalPosition, PredictionDuration)
+	local Gravity = workspace.Gravity
+	local FloorRootY = GetPredictionFloorRootY(TargetCharacter, Humanoid, RootPart, HorizontalPosition)
+	local AverageJumpInterval, JumpIntervalDeviation = GetHistoryAverage(Tracker.JumpIntervals)
+	local AverageTakeoffVelocity = GetHistoryAverage(Tracker.TakeoffVelocities)
+	local HasReliableJumpCycle = AverageJumpInterval
+		and AverageTakeoffVelocity
+		and AverageTakeoffVelocity > 5
+		and #Tracker.JumpIntervals >= 2
+		and JumpIntervalDeviation <= AverageJumpInterval * 0.30
+
+	local function GetJumpArc(Time)
+		return AverageTakeoffVelocity * Time - 0.5 * Gravity * Time * Time
+	end
+
+	if Tracker.Airborne then
+		local BallisticDisplacement = Tracker.VerticalVelocity * PredictionDuration
+			- 0.5 * Gravity * PredictionDuration * PredictionDuration
+
+		if not FloorRootY or Gravity <= 0 then
+			return BallisticDisplacement
+		end
+
+		local HeightAboveFloor = math.max(0, RootPart.Position.Y - FloorRootY)
+		local Discriminant = Tracker.VerticalVelocity * Tracker.VerticalVelocity + 2 * Gravity * HeightAboveFloor
+		local LandingTime = (Tracker.VerticalVelocity + math.sqrt(math.max(0, Discriminant))) / Gravity
+
+		if LandingTime >= 0 and LandingTime <= PredictionDuration then
+			if HasReliableJumpCycle and Tracker.LastTakeoffAt then
+				local ProjectedCycleLength = os.clock() - Tracker.LastTakeoffAt + LandingTime
+				local CycleTolerance = math.max(0.10, AverageJumpInterval * 0.25)
+				if math.abs(ProjectedCycleLength - AverageJumpInterval) <= CycleTolerance then
+					local RemainingJumpTime = PredictionDuration - LandingTime
+					return (FloorRootY - RootPart.Position.Y) + GetJumpArc(RemainingJumpTime)
+				end
+			end
+
+			return FloorRootY - RootPart.Position.Y
+		end
+
+		return BallisticDisplacement
+	end
+
+	-- Covers the very short grounded frame between repeated jump-spam takeoffs.
+	if HasReliableJumpCycle and Tracker.LastTakeoffAt and Tracker.LastLandingAt then
+		local TimeSinceTakeoff = os.clock() - Tracker.LastTakeoffAt
+		local TimeUntilNextTakeoff = AverageJumpInterval - TimeSinceTakeoff
+		if TimeUntilNextTakeoff >= 0
+			and TimeUntilNextTakeoff <= PredictionDuration
+			and os.clock() - Tracker.LastLandingAt <= 0.18 then
+			local RemainingJumpTime = PredictionDuration - TimeUntilNextTakeoff
+			return GetJumpArc(RemainingJumpTime)
+		end
+	end
+
+	return 0
+end
+
 local function GetPredictedAimPosition(TargetCharacter, AimPart)
 	local RootPart = TargetCharacter:FindFirstChild("HumanoidRootPart")
 	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
@@ -632,27 +1076,26 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart)
 		return AimPart.Position
 	end
 
-	local Velocity = RootPart.AssemblyLinearVelocity
-	local State = Humanoid:GetState()
-	local IsAirborne = Humanoid.FloorMaterial == Enum.Material.Air
-		or State == Enum.HumanoidStateType.Jumping
-		or State == Enum.HumanoidStateType.Freefall
+	local Tracker = UpdatePredictionTracker(TargetCharacter, Humanoid, RootPart)
+	local AimOffset = AimPart.Position - RootPart.Position
+	local HorizontalDisplacement = GetStrafeAwareHorizontalDisplacement(Tracker, PredictionTime)
+	HorizontalDisplacement = ResolveHorizontalCollision(TargetCharacter, RootPart, HorizontalDisplacement)
 
-	local HorizontalVelocity = Vector3.new(
-		math.clamp(Velocity.X, -MaximumHorizontalVelocity, MaximumHorizontalVelocity),
-		0,
-		math.clamp(Velocity.Z, -MaximumHorizontalVelocity, MaximumHorizontalVelocity)
+	local HorizontalPosition = RootPart.Position + HorizontalDisplacement
+	local VerticalDisplacement = GetJumpAwareVerticalDisplacement(
+		TargetCharacter,
+		Humanoid,
+		RootPart,
+		Tracker,
+		HorizontalPosition,
+		PredictionTime
 	)
-	local VerticalVelocity = IsAirborne and math.clamp(Velocity.Y, -MaximumVerticalVelocity, MaximumVerticalVelocity) or 0
-	local PredictedPosition = AimPart.Position
-		+ HorizontalVelocity * PredictionTime
-		+ Vector3.new(0, VerticalVelocity * PredictionTime, 0)
 
-	if IsAirborne then
-		PredictedPosition += Vector3.new(0, -0.5 * workspace.Gravity * PredictionTime * PredictionTime, 0)
-	end
+	local PredictedRootPosition = RootPart.Position
+		+ HorizontalDisplacement
+		+ Vector3.new(0, VerticalDisplacement, 0)
 
-	return PredictedPosition
+	return PredictedRootPosition + AimOffset
 end
 
 local function GetCharacterScreenDistance(Character, PointerPosition)
@@ -708,7 +1151,7 @@ local function GetCharacterScreenDistance(Character, PointerPosition)
 	return (ClosestPoint - PointerPosition).Magnitude
 end
 
-local function FindTargetNearPointer(PointerPosition, OriginPosition)
+local function FindHoveredPlayerNearPointer(PointerPosition)
 	CurrentCamera = workspace.CurrentCamera or CurrentCamera
 
 	local BestPlayer
@@ -722,13 +1165,10 @@ local function FindTargetNearPointer(PointerPosition, OriginPosition)
 			local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
 			local AimPart = Character and (Character:FindFirstChild("Head") or RootPart)
 
-			if Humanoid and Humanoid.Health > 0 and RootPart and AimPart then
-				local ScreenDistance = GetCharacterScreenDistance(Character, PointerPosition)
+				if Humanoid and Humanoid.Health > 0 and RootPart and AimPart then
+					local ScreenDistance = GetCharacterScreenDistance(Character, PointerPosition)
 
-				if ScreenDistance then
-					local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
-
-					if ScreenDistance <= BestScreenDistance and HasClearShot(OriginPosition, Character, PredictedPosition) then
+					if ScreenDistance and ScreenDistance <= BestScreenDistance then
 						BestPlayer = Player
 						BestAimPart = AimPart
 						BestScreenDistance = ScreenDistance
@@ -736,9 +1176,114 @@ local function FindTargetNearPointer(PointerPosition, OriginPosition)
 				end
 			end
 		end
+
+	return BestPlayer, BestAimPart, BestScreenDistance
+end
+
+local function FindTargetNearPointer(PointerPosition, OriginPosition)
+	local HoveredPlayer, AimPart = FindHoveredPlayerNearPointer(PointerPosition)
+	local Character = HoveredPlayer and HoveredPlayer.Character
+	if not Character or not AimPart then
+		return nil, nil
 	end
 
-	return BestPlayer, BestAimPart
+	local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
+	if HasClearShot(OriginPosition, Character, PredictedPosition) then
+		return HoveredPlayer, AimPart
+	end
+
+	return nil, nil
+end
+
+local function GetPrettyMovementState(StateName)
+	local Names = {
+		Idle = "IDLE",
+		Walk = "WALKING",
+		Run = "RUNNING",
+		JumpRising = "JUMP • RISING",
+		JumpApex = "JUMP • APEX",
+		JumpFalling = "JUMP • FALLING",
+		RunJumpRising = "RUN + JUMP • RISING",
+		RunJumpApex = "RUN + JUMP • APEX",
+		RunJumpFalling = "RUN + JUMP • FALLING",
+	}
+	return Names[StateName] or string.upper(StateName or "UNKNOWN")
+end
+
+local function UpdateTrackingDisplay(HoveredPlayer, AimPart, HasGun, ClearShot)
+	CurrentHoveredPlayer = HoveredPlayer
+	local Character = HoveredPlayer and HoveredPlayer.Character
+	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+
+	if not Character or not Humanoid or not RootPart or not AimPart then
+		TrackingPlayerLabel.Text = "Hover the circle over a player"
+		TrackingValidity.Text = "NO PLAYER"
+		TrackingValidity.TextColor3 = Color3.fromRGB(150, 150, 161)
+		TrackingCardStroke.Color = Color3.fromRGB(56, 56, 65)
+		TrackingDataLabel.Text = "STATE    --\nSPEED    --        VERTICAL  --\nACCEL    --\nSTRAFE   --\nJUMP     --        LEAD      --"
+		return
+	end
+
+	local Tracker = UpdatePredictionTracker(Character, Humanoid, RootPart)
+	local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
+	local PredictionOffset = PredictedPosition - AimPart.Position
+	local HorizontalLead = Vector3.new(PredictionOffset.X, 0, PredictionOffset.Z).Magnitude
+	local HorizontalSpeed = Tracker.SmoothedHorizontalVelocity.Magnitude
+	local AverageFlipInterval, FlipDeviation = GetHistoryAverage(Tracker.FlipIntervals)
+	local AverageJumpInterval = GetHistoryAverage(Tracker.JumpIntervals)
+	local StrafeText
+
+	if Tracker.StrafeScore >= 1.5 and AverageFlipInterval and #Tracker.FlipIntervals >= 2 then
+		if FlipDeviation <= AverageFlipInterval * 0.42 then
+			StrafeText = string.format("PATTERN %.2fs  FLIPS %d", AverageFlipInterval, #Tracker.FlipIntervals)
+		else
+			StrafeText = string.format("IRREGULAR  FLIPS %d", #Tracker.FlipIntervals)
+		end
+	elseif Tracker.StrafeScore >= 0.75 then
+		StrafeText = "DIRECTION REVERSAL"
+	else
+		StrafeText = "STABLE"
+	end
+
+	local JumpText
+	if Tracker.Airborne then
+		JumpText = Tracker.VerticalVelocity > 1.25 and "RISING"
+			or Tracker.VerticalVelocity < -1.25 and "FALLING"
+			or "APEX"
+	elseif AverageJumpInterval and #Tracker.JumpIntervals >= 2 then
+		JumpText = string.format("CYCLE %.2fs", AverageJumpInterval)
+	else
+		JumpText = "GROUNDED"
+	end
+
+	TrackingPlayerLabel.Text = HoveredPlayer.DisplayName .. "  @" .. HoveredPlayer.Name
+	if not HasGun then
+		TrackingValidity.Text = "EQUIP GUN"
+		TrackingValidity.TextColor3 = Color3.fromRGB(255, 174, 95)
+		TrackingCardStroke.Color = Color3.fromRGB(125, 91, 44)
+	elseif ClearShot then
+		TrackingValidity.Text = "CLEAR SHOT"
+		TrackingValidity.TextColor3 = Color3.fromRGB(100, 230, 145)
+		TrackingCardStroke.Color = Color3.fromRGB(47, 126, 79)
+	else
+		TrackingValidity.Text = "BLOCKED • WALL"
+		TrackingValidity.TextColor3 = Color3.fromRGB(255, 174, 95)
+		TrackingCardStroke.Color = Color3.fromRGB(145, 87, 41)
+	end
+
+	TrackingDataLabel.Text = string.format(
+		"STATE    %s\nSPEED    %6.2f     VERTICAL %+6.2f\nACCEL    %6.2f     STRAFE   %s\nJUMP     %-10s LEAD H %5.2f\nLEAD Y   %+6.2f     DELAY    %.2fs",
+		GetPrettyMovementState(Tracker.MovementState),
+		HorizontalSpeed,
+		Tracker.VerticalVelocity,
+		Tracker.HorizontalAcceleration.Magnitude,
+		StrafeText,
+		JumpText,
+		HorizontalLead,
+		PredictionOffset.Y,
+		PredictionTime
+	)
 end
 
 local function ClearTargetHighlight()
@@ -1374,7 +1919,10 @@ local function FireAtPointer(PointerPosition)
 
 	local TargetPlayer, AimPart = FindTargetNearPointer(PointerPosition, OriginAttachment.WorldPosition)
 	if not TargetPlayer or not AimPart then
-		StatusLabel.Text = "No visible player touching the circle"
+		local HoveredPlayer = FindHoveredPlayerNearPointer(PointerPosition)
+		StatusLabel.Text = HoveredPlayer
+			and (HoveredPlayer.DisplayName .. " is blocked by a wall")
+			or "No player touching the circle"
 		StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
 		return
 	end
@@ -1481,6 +2029,7 @@ RenderConnection = RunService.RenderStepped:Connect(function(DeltaTime)
 
 	if not TargetingEnabled then
 		TargetCircle.Visible = false
+		UpdateTrackingDisplay(nil, nil, false, false)
 		return
 	end
 
@@ -1495,10 +2044,40 @@ RenderConnection = RunService.RenderStepped:Connect(function(DeltaTime)
 		SetManualActivation(Gun, true)
 	end
 
+	local HoveredPlayer, HoveredAimPart = FindHoveredPlayerNearPointer(PointerPosition)
+	local HoveredCharacter = HoveredPlayer and HoveredPlayer.Character
+	local HoveredPredictedPosition = HoveredCharacter and HoveredAimPart
+		and GetPredictedAimPosition(HoveredCharacter, HoveredAimPart)
+	local HoveredClearShot = HoveredPredictedPosition
+		and HasClearShot(OriginPosition, HoveredCharacter, HoveredPredictedPosition)
+		or false
 	local TargetPlayer, AimPart = FindTargetNearPointer(PointerPosition, OriginPosition)
 	SetCurrentTarget(TargetPlayer, AimPart)
+	UpdateTrackingDisplay(HoveredPlayer, HoveredAimPart, Gun ~= nil, HoveredClearShot)
 
-	if TargetPlayer then
+	if HoveredPlayer then
+		CircleTargetLabel.Text = HoveredPlayer.DisplayName
+		if not Gun then
+			TargetCircleStroke.Color = Color3.fromRGB(205, 135, 55)
+			TargetCircleStroke.Thickness = 2
+			CircleTargetLabel.TextColor3 = Color3.fromRGB(245, 180, 90)
+			StatusLabel.Text = "Hovering " .. HoveredPlayer.DisplayName .. " • equip gun"
+			StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
+		elseif HoveredClearShot and TargetPlayer == HoveredPlayer then
+			TargetCircleStroke.Color = Color3.fromRGB(255, 25, 35)
+			TargetCircleStroke.Thickness = 3
+			CircleTargetLabel.TextColor3 = Color3.fromRGB(255, 70, 78)
+			StatusLabel.Text = "Hovering " .. HoveredPlayer.DisplayName .. " • clear shot"
+			StatusLabel.TextColor3 = Color3.fromRGB(130, 235, 160)
+		else
+			TargetCircleStroke.Color = Color3.fromRGB(235, 145, 55)
+			TargetCircleStroke.Thickness = 3
+			CircleTargetLabel.Text = HoveredPlayer.DisplayName .. " • WALL"
+			CircleTargetLabel.TextColor3 = Color3.fromRGB(255, 180, 90)
+			StatusLabel.Text = "Hovering " .. HoveredPlayer.DisplayName .. " • blocked by wall"
+			StatusLabel.TextColor3 = Color3.fromRGB(255, 170, 105)
+		end
+	elseif TargetPlayer then
 		TargetCircleStroke.Color = Color3.fromRGB(255, 25, 35)
 		TargetCircleStroke.Thickness = 3
 		CircleTargetLabel.Text = TargetPlayer.DisplayName
