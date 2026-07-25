@@ -34,6 +34,34 @@ local PredictionIdleSpeed = 0.75
 local PredictionRunSpeed = 19.5
 local PredictionHistoryLimit = 8
 local PredictionTrackers = setmetatable({}, { __mode = "k" })
+local AdaptiveEnabled = true
+local AdaptiveLearningRate = 0.42
+local AdaptiveMaximumStep = 0.025
+local AdaptiveMinimumMovementSpeed = 2.5
+local AdaptiveBeamMatchWindow = 0.85
+local AdaptiveOutcomeWindow = 0.90
+local AdaptiveProfiles = {}
+local AdaptivePendingShots = {}
+local AdaptiveCapturedParts = setmetatable({}, { __mode = "k" })
+local AdaptiveConfirmedHumanoids = setmetatable({}, { __mode = "k" })
+local AdaptiveShotSequence = 0
+local AdaptiveHudConnections = {}
+local AdaptiveStats = {
+	Shots = 0,
+	Kills = 0,
+	Hits = 0,
+	Misses = 0,
+	Beams = 0,
+	LastOutcome = "WAITING FOR SHOT",
+	LastTarget = "--",
+	LastMiss = nil,
+	LastCorrection = 0,
+	LastBeamAge = nil,
+	LastBeamAlignment = nil,
+	LastBeamOriginGap = nil,
+	LastProfile = "--",
+	LastActivePrediction = PredictionTime,
+}
 local SpectatorRenderBindingName = "_StaffSpectatorView_" .. tostring(LocalPlayer.UserId)
 local SpectatorFinalBindingName = SpectatorRenderBindingName .. "_Final"
 local SpectatorBodyBindingName = SpectatorRenderBindingName .. "_Body"
@@ -45,6 +73,17 @@ RunService:UnbindFromRenderStep(SpectatorBodyBindingName)
 local ExistingGui = PlayerGui:FindFirstChild("GunNearestToggleStaff")
 if ExistingGui then
 	ExistingGui:Destroy()
+end
+
+for _, HudName in ipairs({
+	"AdaptivePredictionHUD",
+	"BeamAccuracyHUD",
+	"ShotOutcomeHUD",
+}) do
+	local ExistingHud = PlayerGui:FindFirstChild(HudName)
+	if ExistingHud then
+		ExistingHud:Destroy()
+	end
 end
 
 local ExistingMarker = workspace:FindFirstChild("_GunPredictionMarker")
@@ -283,15 +322,33 @@ HotkeyCorner.Parent = HotkeyButton
 local PredictionLabel = Instance.new("TextLabel")
 PredictionLabel.Name = "PredictionLabel"
 PredictionLabel.Position = UDim2.fromOffset(14, 157)
-PredictionLabel.Size = UDim2.new(1, -28, 0, 21)
+PredictionLabel.Size = UDim2.fromOffset(145, 21)
 PredictionLabel.BackgroundTransparency = 1
 PredictionLabel.Font = Enum.Font.GothamMedium
-PredictionLabel.Text = "Prediction: 0.09s"
+PredictionLabel.Text = "Base: 0.09s"
 PredictionLabel.TextColor3 = Color3.fromRGB(205, 205, 214)
 PredictionLabel.TextSize = 12
 PredictionLabel.TextXAlignment = Enum.TextXAlignment.Left
 PredictionLabel.ZIndex = 31
 PredictionLabel.Parent = MainFrame
+
+local AdaptiveButton = Instance.new("TextButton")
+AdaptiveButton.Name = "AdaptiveButton"
+AdaptiveButton.Position = UDim2.fromOffset(166, 155)
+AdaptiveButton.Size = UDim2.fromOffset(106, 25)
+AdaptiveButton.BackgroundColor3 = Color3.fromRGB(45, 116, 79)
+AdaptiveButton.BorderSizePixel = 0
+AdaptiveButton.AutoButtonColor = false
+AdaptiveButton.Font = Enum.Font.GothamBold
+AdaptiveButton.Text = "ADAPTIVE: ON"
+AdaptiveButton.TextColor3 = Color3.fromRGB(235, 255, 243)
+AdaptiveButton.TextSize = 9
+AdaptiveButton.ZIndex = 33
+AdaptiveButton.Parent = MainFrame
+
+local AdaptiveButtonCorner = Instance.new("UICorner")
+AdaptiveButtonCorner.CornerRadius = UDim.new(0, 8)
+AdaptiveButtonCorner.Parent = AdaptiveButton
 
 local SliderTrack = Instance.new("Frame")
 SliderTrack.Name = "SliderTrack"
@@ -428,6 +485,159 @@ TrackingDataLabel.TextYAlignment = Enum.TextYAlignment.Top
 TrackingDataLabel.ZIndex = 32
 TrackingDataLabel.Parent = TrackingCard
 
+local function ConnectAdaptiveHud(Signal, Callback)
+	local Connection = Signal:Connect(Callback)
+	table.insert(AdaptiveHudConnections, Connection)
+	return Connection
+end
+
+local function CreateAdaptiveHud(ScreenName, TitleText, Position, AccentColor)
+	local HudGui = Instance.new("ScreenGui")
+	HudGui.Name = ScreenName
+	HudGui.IgnoreGuiInset = true
+	HudGui.ResetOnSpawn = false
+	HudGui.DisplayOrder = 101
+	HudGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	HudGui.Parent = PlayerGui
+
+	local Panel = Instance.new("Frame")
+	Panel.Name = "Panel"
+	Panel.Position = Position
+	Panel.Size = UDim2.fromOffset(238, 104)
+	Panel.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+	Panel.BorderSizePixel = 0
+	Panel.Active = true
+	Panel.ZIndex = 60
+	Panel.Parent = HudGui
+
+	local PanelCorner = Instance.new("UICorner")
+	PanelCorner.CornerRadius = UDim.new(0, 10)
+	PanelCorner.Parent = Panel
+
+	local PanelStroke = Instance.new("UIStroke")
+	PanelStroke.Color = AccentColor
+	PanelStroke.Thickness = 1
+	PanelStroke.Transparency = 0.25
+	PanelStroke.Parent = Panel
+
+	local Accent = Instance.new("Frame")
+	Accent.Size = UDim2.fromOffset(4, 104)
+	Accent.BackgroundColor3 = AccentColor
+	Accent.BorderSizePixel = 0
+	Accent.ZIndex = 61
+	Accent.Parent = Panel
+
+	local AccentCorner = Instance.new("UICorner")
+	AccentCorner.CornerRadius = UDim.new(0, 10)
+	AccentCorner.Parent = Accent
+
+	local Header = Instance.new("TextLabel")
+	Header.Position = UDim2.fromOffset(14, 8)
+	Header.Size = UDim2.new(1, -24, 0, 17)
+	Header.BackgroundTransparency = 1
+	Header.Font = Enum.Font.GothamBold
+	Header.Text = TitleText
+	Header.TextColor3 = Color3.fromRGB(235, 235, 241)
+	Header.TextSize = 10
+	Header.TextXAlignment = Enum.TextXAlignment.Left
+	Header.ZIndex = 61
+	Header.Parent = Panel
+
+	local Divider = Instance.new("Frame")
+	Divider.Position = UDim2.fromOffset(14, 30)
+	Divider.Size = UDim2.new(1, -24, 0, 1)
+	Divider.BackgroundColor3 = Color3.fromRGB(52, 52, 61)
+	Divider.BorderSizePixel = 0
+	Divider.ZIndex = 61
+	Divider.Parent = Panel
+
+	local Primary = Instance.new("TextLabel")
+	Primary.Position = UDim2.fromOffset(14, 38)
+	Primary.Size = UDim2.new(1, -24, 0, 22)
+	Primary.BackgroundTransparency = 1
+	Primary.Font = Enum.Font.GothamSemibold
+	Primary.Text = "--"
+	Primary.TextColor3 = AccentColor
+	Primary.TextSize = 12
+	Primary.TextXAlignment = Enum.TextXAlignment.Left
+	Primary.TextTruncate = Enum.TextTruncate.AtEnd
+	Primary.ZIndex = 61
+	Primary.Parent = Panel
+
+	local Detail = Instance.new("TextLabel")
+	Detail.Position = UDim2.fromOffset(14, 62)
+	Detail.Size = UDim2.new(1, -24, 0, 34)
+	Detail.BackgroundTransparency = 1
+	Detail.Font = Enum.Font.Code
+	Detail.Text = "--\n--"
+	Detail.TextColor3 = Color3.fromRGB(184, 184, 196)
+	Detail.TextSize = 10
+	Detail.TextXAlignment = Enum.TextXAlignment.Left
+	Detail.TextYAlignment = Enum.TextYAlignment.Top
+	Detail.ZIndex = 61
+	Detail.Parent = Panel
+
+	local DraggingPanel = false
+	local DragStartPosition
+	local PanelStartPosition
+
+	ConnectAdaptiveHud(Panel.InputBegan, function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseButton1
+			or Input.UserInputType == Enum.UserInputType.Touch then
+			DraggingPanel = true
+			DragStartPosition = Input.Position
+			PanelStartPosition = Panel.Position
+		end
+	end)
+
+	ConnectAdaptiveHud(UserInputService.InputChanged, function(Input)
+		if not DraggingPanel or not DragStartPosition or not PanelStartPosition then
+			return
+		end
+
+		if Input.UserInputType == Enum.UserInputType.MouseMovement
+			or Input.UserInputType == Enum.UserInputType.Touch then
+			local Delta = Input.Position - DragStartPosition
+			Panel.Position = UDim2.new(
+				PanelStartPosition.X.Scale,
+				PanelStartPosition.X.Offset + Delta.X,
+				PanelStartPosition.Y.Scale,
+				PanelStartPosition.Y.Offset + Delta.Y
+			)
+		end
+	end)
+
+	ConnectAdaptiveHud(UserInputService.InputEnded, function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseButton1
+			or Input.UserInputType == Enum.UserInputType.Touch then
+			DraggingPanel = false
+		end
+	end)
+
+	return HudGui, Primary, Detail
+end
+
+local AdaptivePredictionGui, AdaptivePredictionPrimary, AdaptivePredictionDetail = CreateAdaptiveHud(
+	"AdaptivePredictionHUD",
+	"ADAPTIVE PREDICTION",
+	UDim2.fromOffset(12, 72),
+	Color3.fromRGB(83, 221, 148)
+)
+
+local BeamAccuracyGui, BeamAccuracyPrimary, BeamAccuracyDetail = CreateAdaptiveHud(
+	"BeamAccuracyHUD",
+	"BEAM ACCURACY",
+	UDim2.fromOffset(12, 186),
+	Color3.fromRGB(92, 159, 255)
+)
+
+local ShotOutcomeGui, ShotOutcomePrimary, ShotOutcomeDetail = CreateAdaptiveHud(
+	"ShotOutcomeHUD",
+	"SHOT RESULT",
+	UDim2.fromOffset(12, 300),
+	Color3.fromRGB(244, 177, 78)
+)
+
 local ReopenButton = Instance.new("TextButton")
 ReopenButton.Name = "ReopenButton"
 ReopenButton.AnchorPoint = Vector2.new(0.5, 0)
@@ -489,16 +699,32 @@ local function UpdateDrag(Input)
 	)
 end
 
-local function UpdatePrediction(ScreenX)
-	local TrackWidth = math.max(SliderTrack.AbsoluteSize.X, 1)
-	local Alpha = math.clamp((ScreenX - SliderTrack.AbsolutePosition.X) / TrackWidth, 0, 1)
-	PredictionTime = MinimumPrediction + (MaximumPrediction - MinimumPrediction) * Alpha
-	PredictionTime = math.round(PredictionTime * 100) / 100
-	Alpha = (PredictionTime - MinimumPrediction) / (MaximumPrediction - MinimumPrediction)
+local function UpdatePredictionSliderVisual(Value, ShowingAdaptiveValue)
+	local ClampedValue = math.clamp(Value, MinimumPrediction, MaximumPrediction)
+	local Alpha = (ClampedValue - MinimumPrediction) / (MaximumPrediction - MinimumPrediction)
 
 	SliderFill.Size = UDim2.fromScale(Alpha, 1)
 	SliderKnob.Position = UDim2.fromScale(Alpha, 0.5)
-	PredictionLabel.Text = string.format("Prediction: %.2fs", PredictionTime)
+	PredictionLabel.Text = string.format(
+		ShowingAdaptiveValue and "Active: %.3fs" or "Base: %.3fs",
+		ClampedValue
+	)
+end
+
+local function UpdatePrediction(ScreenX)
+	local TrackWidth = math.max(SliderTrack.AbsoluteSize.X, 1)
+	local Alpha = math.clamp((ScreenX - SliderTrack.AbsolutePosition.X) / TrackWidth, 0, 1)
+	local NewPredictionTime = MinimumPrediction + (MaximumPrediction - MinimumPrediction) * Alpha
+	NewPredictionTime = math.round(NewPredictionTime * 100) / 100
+
+	if NewPredictionTime ~= PredictionTime then
+		PredictionTime = NewPredictionTime
+		table.clear(AdaptiveProfiles)
+		AdaptiveStats.LastOutcome = "BASELINE CHANGED"
+		AdaptiveStats.LastCorrection = 0
+	end
+
+	UpdatePredictionSliderVisual(PredictionTime, false)
 end
 
 local function BeginSlider(Input)
@@ -914,6 +1140,38 @@ local function UpdatePredictionTracker(TargetCharacter, Humanoid, RootPart)
 	return Tracker
 end
 
+local function GetAdaptiveProfile(MovementState)
+	local ProfileName = MovementState or "Unknown"
+	local Profile = AdaptiveProfiles[ProfileName]
+
+	if not Profile then
+		Profile = {
+			Name = ProfileName,
+			Value = PredictionTime,
+			Samples = 0,
+			AverageMiss = 0,
+			Kills = 0,
+			Hits = 0,
+			Misses = 0,
+		}
+		AdaptiveProfiles[ProfileName] = Profile
+	end
+
+	return Profile
+end
+
+local function GetEffectivePredictionTime(MovementState)
+	if not AdaptiveEnabled then
+		return PredictionTime
+	end
+
+	return math.clamp(
+		GetAdaptiveProfile(MovementState).Value,
+		MinimumPrediction,
+		MaximumPrediction
+	)
+end
+
 local function GetStrafeAwareHorizontalDisplacement(Tracker, PredictionDuration)
 	if Tracker.MovementState == "Idle" then
 		return Vector3.zero
@@ -1072,13 +1330,19 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart)
 	local RootPart = TargetCharacter:FindFirstChild("HumanoidRootPart")
 	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
 
-	if not RootPart or not Humanoid or PredictionTime <= 0 then
-		return AimPart.Position
+	if not RootPart or not Humanoid then
+		return AimPart.Position, PredictionTime, nil
 	end
 
 	local Tracker = UpdatePredictionTracker(TargetCharacter, Humanoid, RootPart)
+	local ActivePredictionTime = GetEffectivePredictionTime(Tracker.MovementState)
+
+	if ActivePredictionTime <= 0 then
+		return AimPart.Position, ActivePredictionTime, Tracker
+	end
+
 	local AimOffset = AimPart.Position - RootPart.Position
-	local HorizontalDisplacement = GetStrafeAwareHorizontalDisplacement(Tracker, PredictionTime)
+	local HorizontalDisplacement = GetStrafeAwareHorizontalDisplacement(Tracker, ActivePredictionTime)
 	HorizontalDisplacement = ResolveHorizontalCollision(TargetCharacter, RootPart, HorizontalDisplacement)
 
 	local HorizontalPosition = RootPart.Position + HorizontalDisplacement
@@ -1088,15 +1352,426 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart)
 		RootPart,
 		Tracker,
 		HorizontalPosition,
-		PredictionTime
+		ActivePredictionTime
 	)
 
 	local PredictedRootPosition = RootPart.Position
 		+ HorizontalDisplacement
 		+ Vector3.new(0, VerticalDisplacement, 0)
 
-	return PredictedRootPosition + AimOffset
+	return PredictedRootPosition + AimOffset, ActivePredictionTime, Tracker
 end
+
+local function GetBeamWorldPoints(Beam)
+	local Attachment0 = Beam and Beam.Attachment0
+	local Attachment1 = Beam and Beam.Attachment1
+
+	if not Attachment0 or not Attachment1 then
+		return nil
+	end
+
+	if not Attachment0.Parent or not Attachment1.Parent then
+		return nil
+	end
+
+	return Attachment0.WorldPosition, Attachment1.WorldPosition
+end
+
+local function GetClosestPointOnSegment(Point, SegmentStart, SegmentEnd)
+	local Segment = SegmentEnd - SegmentStart
+	local LengthSquared = Segment:Dot(Segment)
+
+	if LengthSquared <= 0.0001 then
+		return SegmentStart, 0
+	end
+
+	local Alpha = math.clamp((Point - SegmentStart):Dot(Segment) / LengthSquared, 0, 1)
+	return SegmentStart + Segment * Alpha, Alpha
+end
+
+local function RemoveAdaptiveShot(Shot)
+	for Index = #AdaptivePendingShots, 1, -1 do
+		if AdaptivePendingShots[Index] == Shot then
+			table.remove(AdaptivePendingShots, Index)
+			break
+		end
+	end
+end
+
+local function ApplyAdaptiveCorrection(Shot)
+	local BeamData = Shot.BeamData
+	local Profile = GetAdaptiveProfile(Shot.MovementState)
+	local MissDistance = BeamData.MissDistance
+	local Velocity = BeamData.TargetVelocity
+	local SpeedSquared = Velocity:Dot(Velocity)
+
+	Profile.Samples += 1
+	Profile.Misses += 1
+	Profile.AverageMiss += (MissDistance - Profile.AverageMiss) / Profile.Samples
+
+	AdaptiveStats.Misses += 1
+	AdaptiveStats.LastMiss = MissDistance
+	AdaptiveStats.LastProfile = Profile.Name
+	AdaptiveStats.LastActivePrediction = Profile.Value
+
+	if math.sqrt(SpeedSquared) < AdaptiveMinimumMovementSpeed then
+		AdaptiveStats.LastCorrection = 0
+		AdaptiveStats.LastOutcome = "MISS • TARGET TOO SLOW"
+		return
+	end
+
+	-- The component of the beam miss along the target's movement tells us
+	-- whether the shot under-led or over-led the target.
+	local MissVector = BeamData.TargetPosition - BeamData.ClosestPoint
+	local RawTimeCorrection = MissVector:Dot(Velocity) / math.max(SpeedSquared, 0.001)
+	local LearnedCorrection = math.clamp(
+		RawTimeCorrection * AdaptiveLearningRate,
+		-AdaptiveMaximumStep,
+		AdaptiveMaximumStep
+	)
+
+	if math.abs(LearnedCorrection) < 0.0005 then
+		LearnedCorrection = 0
+	end
+
+	Profile.Value = math.clamp(
+		Profile.Value + LearnedCorrection,
+		MinimumPrediction,
+		MaximumPrediction
+	)
+
+	AdaptiveStats.LastCorrection = LearnedCorrection
+	AdaptiveStats.LastActivePrediction = Profile.Value
+	AdaptiveStats.LastOutcome = LearnedCorrection == 0
+		and "MISS • NO SAFE CHANGE"
+		or (LearnedCorrection > 0 and "MISS • INCREASING LEAD" or "MISS • REDUCING LEAD")
+end
+
+local function ResolveAdaptiveShot(Shot)
+	if Shot.Resolved then
+		return
+	end
+
+	Shot.Resolved = true
+	RemoveAdaptiveShot(Shot)
+
+	local Character = Shot.Character
+	local Humanoid = Shot.Humanoid
+	local Eliminated = not Character
+		or not Character.Parent
+		or not Humanoid
+		or not Humanoid.Parent
+		or Humanoid.Health <= 0
+	local Profile = GetAdaptiveProfile(Shot.MovementState)
+
+	AdaptiveStats.LastTarget = Shot.Player and Shot.Player.DisplayName or "--"
+	AdaptiveStats.LastProfile = Profile.Name
+
+	if Eliminated then
+		-- Several queued shots can observe the same eliminated Humanoid. Only
+		-- the first matched shot is allowed to confirm it.
+		if not Humanoid or AdaptiveConfirmedHumanoids[Humanoid] then
+			return
+		end
+
+		if not Shot.BeamData then
+			AdaptiveStats.LastOutcome = "ELIMINATION • BEAM UNVERIFIED"
+			AdaptiveStats.LastCorrection = 0
+			return
+		end
+
+		AdaptiveConfirmedHumanoids[Humanoid] = Shot.Id
+		AdaptiveStats.Kills += 1
+		AdaptiveStats.Hits += 1
+		AdaptiveStats.LastOutcome = "HIT CONFIRMED • ELIMINATED"
+		AdaptiveStats.LastCorrection = 0
+		Profile.Kills += 1
+		Profile.Hits += 1
+		return
+	end
+
+	if not Shot.BeamData then
+		AdaptiveStats.LastOutcome = "NO MATCHING BEAM"
+		AdaptiveStats.LastCorrection = 0
+		return
+	end
+
+	-- In this game a real hit eliminates the target. If the same Humanoid is
+	-- still alive, the beam proximity is only measurement data, not a hit.
+	if AdaptiveEnabled then
+		ApplyAdaptiveCorrection(Shot)
+	else
+		AdaptiveStats.Misses += 1
+		AdaptiveStats.LastMiss = Shot.BeamData.MissDistance
+		AdaptiveStats.LastOutcome = "MISS • ADAPTIVE PAUSED"
+		AdaptiveStats.LastCorrection = 0
+	end
+end
+
+local function RegisterAdaptiveShot(
+	TargetPlayer,
+	TargetCharacter,
+	Humanoid,
+	AimPart,
+	OriginPosition,
+	PredictedPosition,
+	ActivePredictionTime,
+	Tracker
+)
+	AdaptiveShotSequence += 1
+
+	local RootPart = TargetCharacter:FindFirstChild("HumanoidRootPart")
+	local TargetVelocity = RootPart and RootPart.AssemblyLinearVelocity or Vector3.zero
+	local Shot = {
+		Id = AdaptiveShotSequence,
+		FiredAt = os.clock(),
+		Player = TargetPlayer,
+		Character = TargetCharacter,
+		Humanoid = Humanoid,
+		AimPart = AimPart,
+		AimPartName = AimPart.Name,
+		Origin = OriginPosition,
+		PredictedPosition = PredictedPosition,
+		PredictionUsed = ActivePredictionTime,
+		MovementState = Tracker and Tracker.MovementState or "Unknown",
+		TargetVelocity = TargetVelocity,
+		BeamData = nil,
+		Resolved = false,
+	}
+
+	table.insert(AdaptivePendingShots, Shot)
+	AdaptiveStats.Shots += 1
+	AdaptiveStats.LastTarget = TargetPlayer.DisplayName
+	AdaptiveStats.LastOutcome = "WAITING FOR BEAM"
+	AdaptiveStats.LastMiss = nil
+	AdaptiveStats.LastCorrection = 0
+	AdaptiveStats.LastProfile = Shot.MovementState
+	AdaptiveStats.LastActivePrediction = ActivePredictionTime
+
+	task.delay(AdaptiveOutcomeWindow, function()
+		ResolveAdaptiveShot(Shot)
+	end)
+
+	return Shot
+end
+
+local function MatchBeamToAdaptiveShot(Point0, Point1)
+	local Now = os.clock()
+	local BestShot
+	local BestStart
+	local BestEnd
+	local BestAlignment
+	local BestOriginGap
+	local BestScore = math.huge
+
+	for _, Shot in ipairs(AdaptivePendingShots) do
+		local Age = Now - Shot.FiredAt
+
+		if not Shot.Resolved
+			and not Shot.BeamData
+			and Age >= 0
+			and Age <= AdaptiveBeamMatchWindow then
+			local ExpectedOffset = Shot.PredictedPosition - Shot.Origin
+
+			if ExpectedOffset.Magnitude > 0.01 then
+				local Point0Gap = (Point0 - Shot.Origin).Magnitude
+				local Point1Gap = (Point1 - Shot.Origin).Magnitude
+				local BeamStart = Point0Gap <= Point1Gap and Point0 or Point1
+				local BeamEnd = Point0Gap <= Point1Gap and Point1 or Point0
+				local BeamOffset = BeamEnd - BeamStart
+				local OriginGap = math.min(Point0Gap, Point1Gap)
+
+				if BeamOffset.Magnitude > 0.01 then
+					local Alignment = BeamOffset.Unit:Dot(ExpectedOffset.Unit)
+
+					if OriginGap <= 20 and Alignment >= 0.82 then
+						local Score = OriginGap * 0.08 + (1 - Alignment) * 12 + Age * 0.25
+
+						if Score < BestScore then
+							BestScore = Score
+							BestShot = Shot
+							BestStart = BeamStart
+							BestEnd = BeamEnd
+							BestAlignment = Alignment
+							BestOriginGap = OriginGap
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return BestShot, BestStart, BestEnd, BestAlignment, BestOriginGap
+end
+
+local function CaptureAdaptiveBeam(BeamPart, Beam)
+	local Point0, Point1 = GetBeamWorldPoints(Beam)
+	if not Point0 or not Point1 then
+		return false
+	end
+
+	local Shot, BeamStart, BeamEnd, Alignment, OriginGap = MatchBeamToAdaptiveShot(Point0, Point1)
+	if not Shot then
+		return false
+	end
+
+	local AimPart = Shot.AimPart
+	if not AimPart or not AimPart.Parent or not AimPart:IsDescendantOf(Shot.Character) then
+		AimPart = Shot.Character and Shot.Character:FindFirstChild(Shot.AimPartName)
+	end
+
+	if not AimPart or not AimPart:IsA("BasePart") then
+		return false
+	end
+
+	local TargetPosition = AimPart.Position
+	local ClosestPoint, SegmentAlpha = GetClosestPointOnSegment(TargetPosition, BeamStart, BeamEnd)
+	local RootPart = Shot.Character:FindFirstChild("HumanoidRootPart")
+	local TargetVelocity = RootPart and RootPart.AssemblyLinearVelocity or Shot.TargetVelocity
+	local MissDistance = (TargetPosition - ClosestPoint).Magnitude
+	local BeamAge = os.clock() - Shot.FiredAt
+
+	Shot.BeamData = {
+		Part = BeamPart,
+		Beam = Beam,
+		Start = BeamStart,
+		End = BeamEnd,
+		ClosestPoint = ClosestPoint,
+		SegmentAlpha = SegmentAlpha,
+		TargetPosition = TargetPosition,
+		TargetVelocity = TargetVelocity,
+		MissDistance = MissDistance,
+		Age = BeamAge,
+		Alignment = Alignment,
+		OriginGap = OriginGap,
+	}
+
+	AdaptiveStats.Beams += 1
+	AdaptiveStats.LastMiss = MissDistance
+	AdaptiveStats.LastBeamAge = BeamAge
+	AdaptiveStats.LastBeamAlignment = Alignment
+	AdaptiveStats.LastBeamOriginGap = OriginGap
+	AdaptiveStats.LastOutcome = "BEAM CAPTURED"
+	return true
+end
+
+local function QueueAdaptiveBeamPart(BeamPart)
+	if not BeamPart or BeamPart.Name ~= "Part" or AdaptiveCapturedParts[BeamPart] then
+		return
+	end
+
+	AdaptiveCapturedParts[BeamPart] = "processing"
+
+	task.spawn(function()
+		local StartedAt = os.clock()
+
+		repeat
+			if not BeamPart.Parent then
+				break
+			end
+
+			local Beam = BeamPart:FindFirstChildWhichIsA("Beam", true)
+			if Beam and GetBeamWorldPoints(Beam) then
+				if CaptureAdaptiveBeam(BeamPart, Beam) then
+					AdaptiveCapturedParts[BeamPart] = true
+					return
+				end
+			end
+
+			task.wait(0.01)
+		until os.clock() - StartedAt >= 0.45
+
+		-- Let DescendantAdded retry if the Beam or its attachments arrived late.
+		if AdaptiveCapturedParts[BeamPart] == "processing" then
+			AdaptiveCapturedParts[BeamPart] = nil
+		end
+	end)
+end
+
+local function FindWorkspacePartContainer(InstanceValue)
+	local Current = InstanceValue
+
+	while Current and Current.Parent and Current.Parent ~= workspace do
+		Current = Current.Parent
+	end
+
+	if Current and Current.Parent == workspace and Current.Name == "Part" then
+		return Current
+	end
+
+	return nil
+end
+
+local function UpdateAdaptiveTelemetry()
+	local HoveredCharacter = CurrentHoveredPlayer and CurrentHoveredPlayer.Character
+	local HoveredHumanoid = HoveredCharacter and HoveredCharacter:FindFirstChildOfClass("Humanoid")
+	local HoveredRoot = HoveredCharacter and HoveredCharacter:FindFirstChild("HumanoidRootPart")
+	local MovementState = AdaptiveStats.LastProfile
+	local ActivePrediction = AdaptiveStats.LastActivePrediction
+	local Profile
+
+	if HoveredCharacter and HoveredHumanoid and HoveredRoot and HoveredHumanoid.Health > 0 then
+		local Tracker = UpdatePredictionTracker(HoveredCharacter, HoveredHumanoid, HoveredRoot)
+		MovementState = Tracker.MovementState
+		Profile = GetAdaptiveProfile(MovementState)
+		ActivePrediction = GetEffectivePredictionTime(MovementState)
+	elseif MovementState and MovementState ~= "--" then
+		Profile = GetAdaptiveProfile(MovementState)
+		ActivePrediction = Profile.Value
+	end
+
+	UpdatePredictionSliderVisual(
+		AdaptiveEnabled and ActivePrediction or PredictionTime,
+		AdaptiveEnabled
+	)
+
+	AdaptivePredictionPrimary.Text = AdaptiveEnabled
+		and string.format("ACTIVE %.3fs  •  %s", ActivePrediction, string.upper(MovementState or "--"))
+		or string.format("PAUSED  •  BASE %.3fs", PredictionTime)
+
+	local Delta = ActivePrediction - PredictionTime
+	AdaptivePredictionDetail.Text = string.format(
+		"BASE %.3fs   DELTA %+0.3fs\nSAMPLES %d   AVG MISS %.2f",
+		PredictionTime,
+		Delta,
+		Profile and Profile.Samples or 0,
+		Profile and Profile.AverageMiss or 0
+	)
+
+	if AdaptiveStats.LastBeamAge then
+		BeamAccuracyPrimary.Text = AdaptiveStats.LastMiss
+			and string.format("OFF BY %.2f STUDS", AdaptiveStats.LastMiss)
+			or "BEAM CAPTURED"
+		BeamAccuracyDetail.Text = string.format(
+			"AGE %dms   ALIGN %.1f%%\nORIGIN GAP %.2f   CAPTURED %d",
+			math.round(AdaptiveStats.LastBeamAge * 1000),
+			(AdaptiveStats.LastBeamAlignment or 0) * 100,
+			AdaptiveStats.LastBeamOriginGap or 0,
+			AdaptiveStats.Beams
+		)
+	else
+		BeamAccuracyPrimary.Text = "WAITING FOR PART + BEAM"
+		BeamAccuracyDetail.Text = "MISS --   ALIGN --\nORIGIN GAP --"
+	end
+
+	ShotOutcomePrimary.Text = AdaptiveStats.LastOutcome
+	ShotOutcomeDetail.Text = string.format(
+		"%s   ADJUST %+0.3fs\nSHOTS %d   HITS %d   MISSES %d",
+		AdaptiveStats.LastTarget,
+		AdaptiveStats.LastCorrection,
+		AdaptiveStats.Shots,
+		AdaptiveStats.Hits,
+		AdaptiveStats.Misses
+	)
+end
+
+ConnectAdaptiveHud(workspace.DescendantAdded, function(Descendant)
+	if Descendant.Parent == workspace and Descendant.Name == "Part" then
+		QueueAdaptiveBeamPart(Descendant)
+	elseif Descendant:IsA("Beam") then
+		QueueAdaptiveBeamPart(FindWorkspacePartContainer(Descendant))
+	end
+end)
 
 local function GetCharacterScreenDistance(Character, PointerPosition)
 	CurrentCamera = workspace.CurrentCamera or CurrentCamera
@@ -1154,6 +1829,49 @@ end
 local function FindHoveredPlayerNearPointer(PointerPosition)
 	CurrentCamera = workspace.CurrentCamera or CurrentCamera
 
+	-- First use the exact screen ray. This makes the circle switch targets
+	-- immediately when the pointer is directly over any queried body part.
+	local IncludedCharacters = {}
+
+	for _, Player in ipairs(Players:GetPlayers()) do
+		if Player ~= LocalPlayer and Player.Character then
+			table.insert(IncludedCharacters, Player.Character)
+		end
+	end
+
+	if #IncludedCharacters > 0 then
+		local PointerRay = CurrentCamera:ViewportPointToRay(PointerPosition.X, PointerPosition.Y)
+		local PointerParameters = RaycastParams.new()
+		PointerParameters.FilterType = Enum.RaycastFilterType.Include
+		PointerParameters.FilterDescendantsInstances = IncludedCharacters
+		PointerParameters.IgnoreWater = true
+
+		local PointerResult = workspace:Raycast(
+			PointerRay.Origin,
+			PointerRay.Direction * 10000,
+			PointerParameters
+		)
+
+		if PointerResult then
+			local HitCharacter = PointerResult.Instance:FindFirstAncestorOfClass("Model")
+			local HitPlayer = HitCharacter and Players:GetPlayerFromCharacter(HitCharacter)
+			local HitHumanoid = HitCharacter and HitCharacter:FindFirstChildOfClass("Humanoid")
+			local HitRoot = HitCharacter and HitCharacter:FindFirstChild("HumanoidRootPart")
+			local HitAimPart = HitCharacter and (HitCharacter:FindFirstChild("Head") or HitRoot)
+
+			if HitPlayer ~= LocalPlayer
+				and HitPlayer
+				and HitHumanoid
+				and HitHumanoid.Health > 0
+				and HitRoot
+				and HitAimPart then
+				return HitPlayer, HitAimPart, 0
+			end
+		end
+	end
+
+	-- Keep the radius/bounding-box fallback so near misses inside the circle
+	-- still select the closest visible on-screen character.
 	local BestPlayer
 	local BestAimPart
 	local BestScreenDistance = TargetRadius
@@ -1187,7 +1905,7 @@ local function FindTargetNearPointer(PointerPosition, OriginPosition)
 		return nil, nil
 	end
 
-	local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
+	local PredictedPosition, ActivePredictionTime = GetPredictedAimPosition(Character, AimPart)
 	if HasClearShot(OriginPosition, Character, PredictedPosition) then
 		return HoveredPlayer, AimPart
 	end
@@ -1282,7 +2000,7 @@ local function UpdateTrackingDisplay(HoveredPlayer, AimPart, HasGun, ClearShot)
 		JumpText,
 		HorizontalLead,
 		PredictionOffset.Y,
-		PredictionTime
+		ActivePredictionTime
 	)
 end
 
@@ -1893,7 +2611,14 @@ end
 
 local function IsPointerOverStaffGui(PointerPosition)
 	for _, GuiObject in ipairs(PlayerGui:GetGuiObjectsAtPosition(PointerPosition.X, PointerPosition.Y)) do
-		if GuiObject:IsDescendantOf(ScreenGui) and GuiObject ~= TargetCircle and not GuiObject:IsDescendantOf(TargetCircle) then
+		local IsMainGui = GuiObject:IsDescendantOf(ScreenGui)
+			and GuiObject ~= TargetCircle
+			and not GuiObject:IsDescendantOf(TargetCircle)
+		local IsAdaptiveHud = GuiObject:IsDescendantOf(AdaptivePredictionGui)
+			or GuiObject:IsDescendantOf(BeamAccuracyGui)
+			or GuiObject:IsDescendantOf(ShotOutcomeGui)
+
+		if IsMainGui or IsAdaptiveHud then
 			return true
 		end
 	end
@@ -1933,7 +2658,22 @@ local function FireAtPointer(PointerPosition)
 		return
 	end
 
-	local PredictedPosition = GetPredictedAimPosition(TargetCharacter, AimPart)
+	local TargetHumanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
+	if not TargetHumanoid or TargetHumanoid.Health <= 0 then
+		return
+	end
+
+	local PredictedPosition, ActivePredictionTime, Tracker = GetPredictedAimPosition(TargetCharacter, AimPart)
+	RegisterAdaptiveShot(
+		TargetPlayer,
+		TargetCharacter,
+		TargetHumanoid,
+		AimPart,
+		OriginAttachment.WorldPosition,
+		PredictedPosition,
+		ActivePredictionTime,
+		Tracker
+	)
 	Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(PredictedPosition))
 	StatusLabel.Text = "Shot sent to " .. TargetPlayer.DisplayName
 	StatusLabel.TextColor3 = Color3.fromRGB(130, 235, 160)
@@ -1961,6 +2701,24 @@ VisualsButton.MouseButton1Click:Connect(function()
 		VisualsButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
 		ClearAllRoleHighlights()
 	end
+end)
+
+AdaptiveButton.MouseButton1Click:Connect(function()
+	AdaptiveEnabled = not AdaptiveEnabled
+
+	if AdaptiveEnabled then
+		AdaptiveButton.Text = "ADAPTIVE: ON"
+		AdaptiveButton.BackgroundColor3 = Color3.fromRGB(45, 116, 79)
+		AdaptiveButton.TextColor3 = Color3.fromRGB(235, 255, 243)
+		AdaptiveStats.LastOutcome = "ADAPTIVE RESUMED"
+	else
+		AdaptiveButton.Text = "ADAPTIVE: OFF"
+		AdaptiveButton.BackgroundColor3 = Color3.fromRGB(48, 48, 57)
+		AdaptiveButton.TextColor3 = Color3.fromRGB(205, 205, 214)
+		AdaptiveStats.LastOutcome = "ADAPTIVE PAUSED"
+	end
+
+	UpdateAdaptiveTelemetry()
 end)
 
 SpectatorButton.MouseButton1Click:Connect(function()
@@ -2030,6 +2788,7 @@ RenderConnection = RunService.RenderStepped:Connect(function(DeltaTime)
 	if not TargetingEnabled then
 		TargetCircle.Visible = false
 		UpdateTrackingDisplay(nil, nil, false, false)
+		UpdateAdaptiveTelemetry()
 		return
 	end
 
@@ -2054,6 +2813,7 @@ RenderConnection = RunService.RenderStepped:Connect(function(DeltaTime)
 	local TargetPlayer, AimPart = FindTargetNearPointer(PointerPosition, OriginPosition)
 	SetCurrentTarget(TargetPlayer, AimPart)
 	UpdateTrackingDisplay(HoveredPlayer, HoveredAimPart, Gun ~= nil, HoveredClearShot)
+	UpdateAdaptiveTelemetry()
 
 	if HoveredPlayer then
 		CircleTargetLabel.Text = HoveredPlayer.DisplayName
@@ -2088,6 +2848,7 @@ RenderConnection = RunService.RenderStepped:Connect(function(DeltaTime)
 		CircleTargetLabel.Text = Gun and "NO TARGET" or "EQUIP GUN"
 		CircleTargetLabel.TextColor3 = Color3.fromRGB(210, 85, 90)
 	end
+
 end)
 
 ScreenGui.Destroying:Connect(function()
@@ -2101,4 +2862,23 @@ ScreenGui.Destroying:Connect(function()
 	ClearTargetHighlight()
 	ClearAllRoleHighlights()
 	RestoreManualActivation()
+
+	for _, Connection in ipairs(AdaptiveHudConnections) do
+		if Connection.Connected then
+			Connection:Disconnect()
+		end
+	end
+	table.clear(AdaptiveHudConnections)
+	table.clear(AdaptivePendingShots)
+	table.clear(AdaptiveConfirmedHumanoids)
+
+	for _, HudGui in ipairs({
+		AdaptivePredictionGui,
+		BeamAccuracyGui,
+		ShotOutcomeGui,
+	}) do
+		if HudGui and HudGui.Parent then
+			HudGui:Destroy()
+		end
+	end
 end)
