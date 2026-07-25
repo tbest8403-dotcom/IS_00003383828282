@@ -917,16 +917,26 @@ local function RefreshRoleVisuals()
 	end
 end
 
-local function HasClearShot(OriginPosition, TargetCharacter, TargetPosition)
+local function HasClearShot(OriginPosition, TargetCharacter)
 	local Character = LocalPlayer.Character
 	LineOfSightParameters.FilterDescendantsInstances = Character and { Character } or {}
 
-	local Result = Workspace:Raycast(
-		OriginPosition,
-		TargetPosition - OriginPosition,
-		LineOfSightParameters
-	)
-	return Result == nil or Result.Instance:IsDescendantOf(TargetCharacter)
+	for _, BodyPart in ipairs(TargetCharacter:GetDescendants()) do
+		if BodyPart:IsA("BasePart")
+			and not BodyPart:FindFirstAncestorOfClass("Tool")
+			and not BodyPart:FindFirstAncestorOfClass("Accessory") then
+			local Result = Workspace:Raycast(
+				OriginPosition,
+				BodyPart.Position - OriginPosition,
+				LineOfSightParameters
+			)
+			if Result == nil or Result.Instance:IsDescendantOf(TargetCharacter) then
+				return true
+			end
+		end
+	end
+
+	return false
 end
 
 local function GetDirectionalEdgeAimPosition(TargetCharacter, AimPart)
@@ -1191,7 +1201,7 @@ local function EvaluatePointerTarget(PointerPosition, OriginPosition)
 	end
 
 	local EdgeAimPosition = GetDirectionalEdgeAimPosition(Character, AimPart)
-	local ClearShot = HasClearShot(OriginPosition, Character, EdgeAimPosition)
+	local ClearShot = HasClearShot(OriginPosition, Character)
 	return HoveredPlayer, AimPart, ClearShot, EdgeAimPosition, ScreenDistance
 end
 
@@ -1217,7 +1227,7 @@ local function FindMurderLockTarget(OriginPosition)
 			if HasKnife and Humanoid and Humanoid.Health > 0 and RootPart and AimPart then
 				local Distance = (RootPart.Position - OriginPosition).Magnitude
 				local EdgeAimPosition = GetDirectionalEdgeAimPosition(Character, AimPart)
-				local ClearShot = HasClearShot(OriginPosition, Character, EdgeAimPosition)
+				local ClearShot = HasClearShot(OriginPosition, Character)
 
 				if ClearShot and Distance < BestVisibleDistance then
 					BestVisiblePlayer = Player
