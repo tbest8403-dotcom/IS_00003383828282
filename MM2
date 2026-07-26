@@ -19,8 +19,8 @@ local Config = {
 	PreviewVerticalSpeed = 18,
 	InnocentColor = Color3.fromRGB(235, 235, 245),
 	ShotDebounce = 0.08,
-	IdleSpeed = 0.75,
-	LeadOutsideMargin = 0.80,
+	PredictionTime = 0.20,
+	VerticalPrediction = 0,
 }
 table.freeze(Config)
 
@@ -33,8 +33,6 @@ local SpectatorHotkey = Enum.KeyCode.V
 local WaitingForSpectatorHotkey = false
 local LastTouchPosition = Vector2.new(CurrentCamera.ViewportSize.X / 2, CurrentCamera.ViewportSize.Y / 2)
 local LastShotTime = 0
-local AirborneHorizontalOffset = 1.90
-local AirborneVerticalOffset = -1.00
 local SpectatorRenderBindingName = "_GunTargeting240SpectatorView_" .. tostring(LocalPlayer.UserId)
 local SpectatorFinalBindingName = SpectatorRenderBindingName .. "_Final"
 local SpectatorBodyBindingName = SpectatorRenderBindingName .. "_Body"
@@ -939,96 +937,44 @@ local function HasClearShot(OriginPosition, TargetCharacter)
 	return false
 end
 
-local function GetDirectionalEdgeAimPosition(TargetCharacter, AimPart)
+local function IsCharacterBodyPart(Instance, TargetCharacter)
+	return Instance:IsA("BasePart")
+		and Instance:IsDescendantOf(TargetCharacter)
+		and not Instance:FindFirstAncestorOfClass("Tool")
+		and not Instance:FindFirstAncestorOfClass("Accessory")
+end
+
+local function GetPrimaryAimPart(TargetCharacter)
+	return TargetCharacter:FindFirstChild("UpperTorso")
+		or TargetCharacter:FindFirstChild("Torso")
+		or TargetCharacter:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetPredictedAimPosition(TargetCharacter, AimPart)
 	local RootPart = TargetCharacter:FindFirstChild("HumanoidRootPart")
 	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
+	local VelocitySource = RootPart or AimPart
+	local PredictionVelocity = VelocitySource.AssemblyLinearVelocity
+	local HorizontalPrediction = Config.PredictionTime
+	local VerticalPrediction = HorizontalPrediction
 
-	if not RootPart or not Humanoid then
-		return AimPart.Position
-	end
+	if Humanoid then
+		local State = Humanoid:GetState()
+		local Airborne = Humanoid.FloorMaterial == Enum.Material.Air
+			or State == Enum.HumanoidStateType.Jumping
+			or State == Enum.HumanoidStateType.Freefall
 
-	local RawVelocity = RootPart.AssemblyLinearVelocity
-	local HorizontalVelocity = Vector3.new(RawVelocity.X, 0, RawVelocity.Z)
-	local MoveDirection = Humanoid.MoveDirection
-	local MovementVector = HorizontalVelocity
-	local State = Humanoid:GetState()
-	local Airborne = Humanoid.FloorMaterial == Enum.Material.Air
-		or State == Enum.HumanoidStateType.Jumping
-		or State == Enum.HumanoidStateType.Freefall
-
-	if not Airborne and MoveDirection.Magnitude > 0.04 then
-		local RequestedHorizontalDirection = Vector3.new(MoveDirection.X, 0, MoveDirection.Z)
-		if RequestedHorizontalDirection.Magnitude > 0 then
-			if HorizontalVelocity.Magnitude <= Config.IdleSpeed
-				or RequestedHorizontalDirection.Unit:Dot(HorizontalVelocity.Unit) < 0.25 then
-				local DirectionSpeed = math.max(HorizontalVelocity.Magnitude, 1)
-				MovementVector = RequestedHorizontalDirection.Unit * DirectionSpeed
-			end
+		if Airborne then
+			VerticalPrediction = Config.VerticalPrediction
 		end
 	end
 
-	local HasMovement = MovementVector.Magnitude > Config.IdleSpeed
-	local MovementDirection = HasMovement and MovementVector.Unit or Vector3.zero
-	local ForwardEdge = 0
-	local ValidPartCount = 0
-	local MinimumBodyY = math.huge
-	local MaximumBodyY = -math.huge
-
-	for _, BodyPart in ipairs(TargetCharacter:GetDescendants()) do
-		if BodyPart:IsA("BasePart") and not BodyPart:FindFirstAncestorOfClass("Tool") then
-			local HalfSize = BodyPart.Size * 0.5
-			local PartCFrame = BodyPart.CFrame
-			if HasMovement then
-				local HalfProjection = math.abs(MovementDirection:Dot(PartCFrame.RightVector)) * HalfSize.X
-					+ math.abs(MovementDirection:Dot(PartCFrame.UpVector)) * HalfSize.Y
-					+ math.abs(MovementDirection:Dot(PartCFrame.LookVector)) * HalfSize.Z
-				local CenterProjection = (BodyPart.Position - RootPart.Position):Dot(MovementDirection)
-				ForwardEdge = math.max(ForwardEdge, CenterProjection + HalfProjection)
-			end
-
-			if not BodyPart:FindFirstAncestorOfClass("Accessory") then
-				local VerticalHalfExtent = math.abs(PartCFrame.RightVector.Y) * HalfSize.X
-					+ math.abs(PartCFrame.UpVector.Y) * HalfSize.Y
-					+ math.abs(PartCFrame.LookVector.Y) * HalfSize.Z
-				MinimumBodyY = math.min(MinimumBodyY, BodyPart.Position.Y - VerticalHalfExtent)
-				MaximumBodyY = math.max(MaximumBodyY, BodyPart.Position.Y + VerticalHalfExtent)
-			end
-
-			ValidPartCount += 1
-		end
-	end
-
-	if ValidPartCount == 0 then
-		return RootPart.Position
-	end
-
-	local AimHeight = RootPart.Position.Y
-	if MinimumBodyY < math.huge and MaximumBodyY > -math.huge then
-		AimHeight = MinimumBodyY + (MaximumBodyY - MinimumBodyY) * 0.52
-	end
-	if Airborne then
-		local AirborneAimPart = TargetCharacter:FindFirstChild("UpperTorso")
-			or TargetCharacter:FindFirstChild("Torso")
-			or TargetCharacter:FindFirstChild("LowerTorso")
-			or RootPart
-		AimHeight = AirborneAimPart.Position.Y
-	end
-
-	local AimOrigin = Vector3.new(RootPart.Position.X, AimHeight, RootPart.Position.Z)
-	if Airborne then
-		AimOrigin += Vector3.new(0, AirborneVerticalOffset, 0)
-	end
-	if not HasMovement then
-		return AimOrigin
-	end
-
-	local LeadDistance
-	if Airborne then
-		LeadDistance = ForwardEdge + AirborneHorizontalOffset
-	else
-		LeadDistance = math.max(0.05, ForwardEdge + Config.LeadOutsideMargin)
-	end
-	return AimOrigin + MovementDirection * LeadDistance
+	return AimPart.Position
+		+ Vector3.new(
+			PredictionVelocity.X * HorizontalPrediction,
+			PredictionVelocity.Y * VerticalPrediction,
+			PredictionVelocity.Z * HorizontalPrediction
+		)
 end
 
 local function GetCharacterScreenDistance(Character, PointerPosition)
@@ -1042,7 +988,7 @@ local function GetCharacterScreenDistance(Character, PointerPosition)
 	local HasBodyPart = false
 
 	for _, BodyPart in ipairs(Character:GetDescendants()) do
-		if BodyPart:IsA("BasePart") and not BodyPart:FindFirstAncestorOfClass("Tool") then
+		if IsCharacterBodyPart(BodyPart, Character) then
 			local HalfSize = BodyPart.Size * 0.5
 			local PartCFrame = BodyPart.CFrame
 			local Right = PartCFrame.RightVector
@@ -1152,7 +1098,7 @@ local function FindHoveredPlayerNearPointer(PointerPosition)
 			local HitPlayer = HitCharacter and Players:GetPlayerFromCharacter(HitCharacter)
 			local HitHumanoid = HitCharacter and HitCharacter:FindFirstChildOfClass("Humanoid")
 			local HitRoot = HitCharacter and HitCharacter:FindFirstChild("HumanoidRootPart")
-			local HitAimPart = HitCharacter and (HitCharacter:FindFirstChild("Head") or HitRoot)
+			local HitAimPart = HitCharacter and GetPrimaryAimPart(HitCharacter)
 
 			if HitPlayer ~= LocalPlayer
 				and HitPlayer
@@ -1176,7 +1122,7 @@ local function FindHoveredPlayerNearPointer(PointerPosition)
 			local Character = Player.Character
 			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
 			local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-			local AimPart = Character and (Character:FindFirstChild("Head") or RootPart)
+			local AimPart = Character and GetPrimaryAimPart(Character)
 
 				if Humanoid and Humanoid.Health > 0 and RootPart and AimPart then
 					local ScreenDistance = GetCharacterScreenDistance(Character, PointerPosition)
@@ -1200,9 +1146,9 @@ local function EvaluatePointerTarget(PointerPosition, OriginPosition)
 		return nil, nil, false, nil, ScreenDistance
 	end
 
-	local EdgeAimPosition = GetDirectionalEdgeAimPosition(Character, AimPart)
+	local PredictedAimPosition = GetPredictedAimPosition(Character, AimPart)
 	local ClearShot = HasClearShot(OriginPosition, Character)
-	return HoveredPlayer, AimPart, ClearShot, EdgeAimPosition, ScreenDistance
+	return HoveredPlayer, AimPart, ClearShot, PredictedAimPosition, ScreenDistance
 end
 
 local function FindMurderLockTarget(OriginPosition)
@@ -1212,8 +1158,8 @@ local function FindMurderLockTarget(OriginPosition)
 	local BestBlockedPlayer
 	local BestBlockedAimPart
 	local BestBlockedDistance = math.huge
-	local BestVisibleEdgeAimPosition
-	local BestBlockedEdgeAimPosition
+	local BestVisiblePredictedAimPosition
+	local BestBlockedPredictedAimPosition
 
 	for _, Player in ipairs(Players:GetPlayers()) do
 		if Player ~= LocalPlayer then
@@ -1221,35 +1167,35 @@ local function FindMurderLockTarget(OriginPosition)
 			local Backpack = Player:FindFirstChildOfClass("Backpack") or Player:FindFirstChild("Backpack")
 			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
 			local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-			local AimPart = Character and (Character:FindFirstChild("Head") or RootPart)
+			local AimPart = Character and GetPrimaryAimPart(Character)
 			local HasKnife = HasNamedTool(Character, "Knife") or HasNamedTool(Backpack, "Knife")
 
 			if HasKnife and Humanoid and Humanoid.Health > 0 and RootPart and AimPart then
 				local Distance = (RootPart.Position - OriginPosition).Magnitude
-				local EdgeAimPosition = GetDirectionalEdgeAimPosition(Character, AimPart)
+				local PredictedAimPosition = GetPredictedAimPosition(Character, AimPart)
 				local ClearShot = HasClearShot(OriginPosition, Character)
 
 				if ClearShot and Distance < BestVisibleDistance then
 					BestVisiblePlayer = Player
 					BestVisibleAimPart = AimPart
 					BestVisibleDistance = Distance
-					BestVisibleEdgeAimPosition = EdgeAimPosition
+					BestVisiblePredictedAimPosition = PredictedAimPosition
 				elseif not ClearShot and Distance < BestBlockedDistance then
 					BestBlockedPlayer = Player
 					BestBlockedAimPart = AimPart
 					BestBlockedDistance = Distance
-					BestBlockedEdgeAimPosition = EdgeAimPosition
+					BestBlockedPredictedAimPosition = PredictedAimPosition
 				end
 			end
 		end
 	end
 
 	if BestVisiblePlayer then
-		return BestVisiblePlayer, BestVisibleAimPart, true, BestVisibleEdgeAimPosition
+		return BestVisiblePlayer, BestVisibleAimPart, true, BestVisiblePredictedAimPosition
 	end
 
 	if BestBlockedPlayer then
-		return BestBlockedPlayer, BestBlockedAimPart, false, BestBlockedEdgeAimPosition
+		return BestBlockedPlayer, BestBlockedAimPart, false, BestBlockedPredictedAimPosition
 	end
 
 	return nil, nil, false, nil
@@ -1955,14 +1901,14 @@ local function FireAtPointer(PointerPosition)
 	local TargetPlayer
 	local AimPart
 	local ClearShot
-	local EdgeAimPosition
+	local PredictedAimPosition
 
 	if MurderLockEnabled then
-		TargetPlayer, AimPart, ClearShot, EdgeAimPosition = FindMurderLockTarget(
+		TargetPlayer, AimPart, ClearShot, PredictedAimPosition = FindMurderLockTarget(
 			OriginAttachment.WorldPosition
 		)
 	else
-		TargetPlayer, AimPart, ClearShot, EdgeAimPosition = EvaluatePointerTarget(
+		TargetPlayer, AimPart, ClearShot, PredictedAimPosition = EvaluatePointerTarget(
 			PointerPosition,
 			OriginAttachment.WorldPosition
 		)
@@ -1996,10 +1942,11 @@ local function FireAtPointer(PointerPosition)
 		return
 	end
 
-	EdgeAimPosition = EdgeAimPosition or GetDirectionalEdgeAimPosition(TargetCharacter, AimPart)
+	PredictedAimPosition = PredictedAimPosition
+		or GetPredictedAimPosition(TargetCharacter, AimPart)
 	LastShotTime = Now
 	local Success, FireError = pcall(function()
-		Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(EdgeAimPosition))
+		Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(PredictedAimPosition))
 	end)
 
 	if Success then
