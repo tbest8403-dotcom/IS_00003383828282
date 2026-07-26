@@ -1,0 +1,976 @@
+-- Auto Weave
+-- Detects nearby combat animations and uses the game's normal weave input.
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+
+local LocalPlayer = Players.LocalPlayer
+local Packet = require(ReplicatedStorage:WaitForChild("Packet"))
+local CombatPacket = Packet("A", Packet.Any, Packet.Buffer)
+
+local Config = {
+	Enabled = false,
+	DetectM1 = true,
+	DetectSpecials = true,
+	TriggerDistance = 10,
+	ReactionDelay = 0.025,
+	WeaveCooldown = 0.43,
+	FacingThreshold = -0.05
+}
+
+local AttackFolders = {
+	M1s = "M1",
+	Grabs = "Special",
+	Stomps = "Special",
+	Shoves = "Special",
+	Slams = "Special"
+}
+
+local AttackAnimations = {}
+local MonitoredAnimators = {}
+local Connections = {}
+local LastWeave = 0
+local LastSide = 1
+local LastPacketTime = 0
+local WeaveBusy = false
+local CurrentWeaveTrack = nil
+local CurrentBodyPosition = nil
+local WeaveTracks = setmetatable({}, { __mode = "k" })
+local Destroyed = false
+local UpdateStatus
+
+local function NormalizeAnimationId(AnimationId)
+	if type(AnimationId) ~= "string" then
+		return nil
+	end
+
+	return AnimationId:match("%d+")
+end
+
+local function GetAttackCategory(Animation)
+	local Current = Animation.Parent
+
+	while Current and Current.Name ~= "Animations" do
+		local Category = AttackFolders[Current.Name]
+
+		if Category then
+			return Category
+		end
+
+		Current = Current.Parent
+	end
+
+	return nil
+end
+
+local function RegisterAnimation(Animation)
+	if not Animation:IsA("Animation") then
+		return
+	end
+
+	local Category = GetAttackCategory(Animation)
+	local AnimationId = NormalizeAnimationId(Animation.AnimationId)
+
+	if Category and AnimationId then
+		AttackAnimations[AnimationId] = Category
+	end
+end
+
+local function ScanAnimations(Root)
+	for _, Descendant in Root:GetDescendants() do
+		RegisterAnimation(Descendant)
+	end
+end
+
+local function CountAttackAnimations()
+	local Count = 0
+
+	for _ in AttackAnimations do
+		Count += 1
+	end
+
+	return Count
+end
+
+local function GetCharacter()
+	local Character = LocalPlayer.Character
+
+	if not Character then
+		return nil
+	end
+
+	local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+	local RootPart = Character:FindFirstChild("HumanoidRootPart")
+
+	if not Humanoid or Humanoid.Health <= 0 or not RootPart then
+		return nil
+	end
+
+	return Character, Humanoid, RootPart
+end
+
+local function HasLineOfSight(EnemyCharacter, EnemyRoot, Character, RootPart)
+	local Parameters = RaycastParams.new()
+	Parameters.FilterType = Enum.RaycastFilterType.Exclude
+	Parameters.FilterDescendantsInstances = { EnemyCharacter, Character }
+	Parameters.IgnoreWater = true
+
+	local Origin = EnemyRoot.Position + Vector3.new(0, 1, 0)
+	local Direction = RootPart.Position + Vector3.new(0, 1, 0) - Origin
+	return workspace:Raycast(Origin, Direction, Parameters) == nil
+end
+
+local function IsSideClear(Character, RootPart, Side)
+	local Parameters = RaycastParams.new()
+	Parameters.FilterType = Enum.RaycastFilterType.Exclude
+	Parameters.FilterDescendantsInstances = { Character }
+	Parameters.IgnoreWater = true
+
+	local Origin = RootPart.Position + Vector3.new(0, 1.5, 0)
+	local Direction = RootPart.CFrame.RightVector * Side * 4.25
+	return workspace:Raycast(Origin, Direction, Parameters) == nil
+end
+
+local function IsBackwardClear(Character, RootPart)
+	local Parameters = RaycastParams.new()
+	Parameters.FilterType = Enum.RaycastFilterType.Exclude
+	Parameters.FilterDescendantsInstances = { Character }
+	Parameters.IgnoreWater = true
+
+	local Origin = RootPart.Position + Vector3.new(0, 1.5, 0)
+	local Direction = -RootPart.CFrame.LookVector * 3.25
+	return workspace:Raycast(Origin, Direction, Parameters) == nil
+end
+
+local function Hash32(Text, Seed)
+	local Value = Seed % 4294967296
+
+	for Index = 1, #Text do
+		local Mixed = bit32.bxor(Value, string.byte(Text, Index))
+		local Low = Mixed % 65536
+		local High = math.floor(Mixed / 65536) % 65536
+		Value = (Low * 403 + (Low * 256 + High * 403) % 65536 * 65536) % 4294967296
+	end
+
+	local Shifted = bit32.bxor(Value, bit32.rshift(Value, 16))
+	local Low = Shifted % 65536
+	local High = math.floor(Shifted / 65536) % 65536
+	local Mixed = (Low * 51819 + (Low * 34283 + High * 51819) % 65536 * 65536) % 4294967296
+	Mixed = bit32.bxor(Mixed, bit32.rshift(Mixed, 13))
+	Low = Mixed % 65536
+	High = math.floor(Mixed / 65536) % 65536
+	Mixed = (Low * 44597 + (Low * 49842 + High * 44597) % 65536 * 65536) % 4294967296
+
+	return bit32.bxor(Mixed, bit32.rshift(Mixed, 16)) % 4294967296
+end
+
+local function DoubleHash(Text)
+	return string.format(
+		"%08x%08x",
+		Hash32(Text, 2166136261),
+		Hash32(Text, 2654435761)
+	)
+end
+
+local function CanonicalizePayload(Payload)
+	local Parts = {}
+
+	for _, Key in { "Type", "SlamType", "Position", "Limb", "Hit", "Humanoid" } do
+		local Value = Payload[Key]
+
+		if Value ~= nil then
+			local ValueType = typeof(Value)
+			local Encoded
+
+			if ValueType == "Instance" then
+				Encoded = Value.Name
+			elseif ValueType == "Vector3" then
+				Encoded = string.format("%.2f,%.2f,%.2f", Value.X, Value.Y, Value.Z)
+			elseif ValueType == "number" then
+				Encoded = string.format("%.4g", Value)
+			else
+				Encoded = tostring(Value)
+			end
+
+			Parts[#Parts + 1] = Key .. "=" .. Encoded
+		end
+	end
+
+	return table.concat(Parts, "&")
+end
+
+local function SecureFire(Payload)
+	local Seed = LocalPlayer:GetAttribute("K")
+
+	if not Seed then
+		return false, "Waiting for security key"
+	end
+
+	local Milliseconds = workspace:GetServerTimeNow() * 1000 + 0.5
+	local PacketTime = math.floor(Milliseconds) / 1000
+
+	if PacketTime <= LastPacketTime then
+		PacketTime = LastPacketTime + 0.001
+	end
+
+	LastPacketTime = PacketTime
+	local TimeBucket = math.floor(PacketTime / 6)
+	local BucketHash = DoubleHash(Seed .. "|" .. tostring(TimeBucket))
+	local SignedText = BucketHash
+		.. "#"
+		.. string.format("%.3f", PacketTime)
+		.. "#"
+		.. CanonicalizePayload(Payload)
+
+	local Success, ErrorMessage = pcall(function()
+		CombatPacket:Fire({
+			p = Payload,
+			t = PacketTime,
+			s = DoubleHash(SignedText)
+		}, buffer.create(math.random(2, 7)))
+	end)
+
+	return Success, ErrorMessage
+end
+
+local function ChooseWeaveDirection(EnemyRoot, Character, RootPart)
+	local EnemyOffset = RootPart.CFrame:PointToObjectSpace(EnemyRoot.Position)
+	local PreferredSide = EnemyOffset.X >= 0 and -1 or 1
+
+	if math.abs(EnemyOffset.X) < 0.3 then
+		PreferredSide = -LastSide
+	end
+
+	if IsSideClear(Character, RootPart, PreferredSide) then
+		LastSide = PreferredSide
+		return PreferredSide == -1 and "Left" or "Right", PreferredSide
+	end
+
+	if IsSideClear(Character, RootPart, -PreferredSide) then
+		LastSide = -PreferredSide
+		return PreferredSide == -1 and "Right" or "Left", -PreferredSide
+	end
+
+	if IsBackwardClear(Character, RootPart) then
+		return "Backward", 0
+	end
+
+	return nil, 0
+end
+
+local function GetWeaveTrack(Character, Humanoid, Direction)
+	local Combat = Character:FindFirstChild("Combat")
+	local Animations = Combat and Combat:FindFirstChild("Animations")
+	local WeaveFolder = Animations and Animations:FindFirstChild("Weave")
+	local Animator = Humanoid:FindFirstChildOfClass("Animator")
+
+	if not WeaveFolder or not Animator then
+		return nil
+	end
+
+	local AnimatorTracks = WeaveTracks[Animator]
+
+	if not AnimatorTracks then
+		AnimatorTracks = {}
+		WeaveTracks[Animator] = AnimatorTracks
+	end
+
+	if AnimatorTracks[Direction] then
+		return AnimatorTracks[Direction]
+	end
+
+	local Animation = WeaveFolder:FindFirstChild(Direction, true)
+
+	if Animation and Animation:IsA("Animation") then
+		AnimatorTracks[Direction] = Animator:LoadAnimation(Animation)
+		return AnimatorTracks[Direction]
+	end
+
+	return nil
+end
+
+local function StopInternalWeave(FadeTime)
+	if CurrentBodyPosition then
+		CurrentBodyPosition:Destroy()
+		CurrentBodyPosition = nil
+	end
+
+	if CurrentWeaveTrack and CurrentWeaveTrack.IsPlaying then
+		CurrentWeaveTrack:Stop(FadeTime or 0.1)
+	end
+
+	CurrentWeaveTrack = nil
+end
+
+local function StartInternalWeave(Character, Humanoid, RootPart, Direction, Side)
+	if WeaveBusy or Character:GetAttribute("WeaveStun") then
+		return false, "Weave unavailable"
+	end
+
+	local Track = GetWeaveTrack(Character, Humanoid, Direction)
+
+	if not Track then
+		return false, "Weave animation missing"
+	end
+
+	WeaveBusy = true
+	StopInternalWeave(0.05)
+	CurrentWeaveTrack = Track
+	CurrentWeaveTrack:Play(0.15)
+
+	for _, Descendant in Character:GetDescendants() do
+		if Descendant:IsA("BodyPosition") then
+			Descendant:Destroy()
+		end
+	end
+
+	local Destination
+
+	if Direction == "Left" or Direction == "Right" then
+		Destination = (RootPart.CFrame * CFrame.new(2.15 * Side, 0, 0)).Position
+	else
+		Destination = (RootPart.CFrame * CFrame.new(0, 0, 1.15)).Position
+	end
+
+	local BodyPosition = Instance.new("BodyPosition")
+	BodyPosition.Position = Destination
+	BodyPosition.MaxForce = Vector3.new(30000, 0, 30000)
+	BodyPosition.P = 80
+	BodyPosition.D = 0
+	BodyPosition.Parent = RootPart
+	CurrentBodyPosition = BodyPosition
+	Debris:AddItem(BodyPosition, 0.2)
+
+	local Success, ErrorMessage = SecureFire({
+		Type = "Weave"
+	})
+
+	if not Success then
+		WeaveBusy = false
+		StopInternalWeave(0.05)
+		return false, ErrorMessage
+	end
+
+	task.delay(0.22, function()
+		if CurrentBodyPosition == BodyPosition then
+			CurrentBodyPosition = nil
+		end
+
+		if CurrentWeaveTrack == Track then
+			StopInternalWeave(0.1)
+		end
+	end)
+
+	task.delay(Config.WeaveCooldown, function()
+		WeaveBusy = false
+
+		if Character:GetAttribute("WeaveStun") then
+			StopInternalWeave(0.05)
+		end
+	end)
+
+	return true
+end
+
+local function PerformWeave(EnemyCharacter)
+	if not Config.Enabled or Destroyed then
+		return
+	end
+
+	if os.clock() - LastWeave < Config.WeaveCooldown then
+		return
+	end
+
+	local Character, Humanoid, RootPart = GetCharacter()
+	local EnemyHumanoid = EnemyCharacter and EnemyCharacter:FindFirstChildOfClass("Humanoid")
+	local EnemyRoot = EnemyCharacter and EnemyCharacter:FindFirstChild("HumanoidRootPart")
+
+	if not Character or not EnemyHumanoid or EnemyHumanoid.Health <= 0 or not EnemyRoot then
+		return
+	end
+
+	local Distance = (EnemyRoot.Position - RootPart.Position).Magnitude
+
+	if Distance > Config.TriggerDistance then
+		return
+	end
+
+	local DirectionToPlayer = RootPart.Position - EnemyRoot.Position
+
+	if DirectionToPlayer.Magnitude <= 0 then
+		return
+	end
+
+	local Facing = EnemyRoot.CFrame.LookVector:Dot(DirectionToPlayer.Unit)
+
+	if Facing < Config.FacingThreshold then
+		return
+	end
+
+	if not HasLineOfSight(EnemyCharacter, EnemyRoot, Character, RootPart) then
+		return
+	end
+
+	if Character:FindFirstChild("Stun")
+		or Character:FindFirstChild("BUSY")
+		or Character:GetAttribute("HitStun")
+		or Character:GetAttribute("WeaveStun") then
+		return
+	end
+
+	local Knocked = Character:FindFirstChild("Knocked")
+
+	if Knocked and Knocked:IsA("BoolValue") and Knocked.Value then
+		return
+	end
+
+	if not Character:FindFirstChild("Fist") then
+		return
+	end
+
+	local Direction, Side = ChooseWeaveDirection(EnemyRoot, Character, RootPart)
+
+	if not Direction then
+		if UpdateStatus then
+			UpdateStatus("Blocked on every side")
+		end
+
+		return
+	end
+
+	LastWeave = os.clock()
+	local Success, ErrorMessage = StartInternalWeave(Character, Humanoid, RootPart, Direction, Side)
+
+	if not Success then
+		if UpdateStatus then
+			UpdateStatus(tostring(ErrorMessage or "Weave packet failed"))
+		end
+
+		return
+	end
+
+	if UpdateStatus then
+		UpdateStatus(Direction .. " weave from " .. EnemyCharacter.Name)
+	end
+end
+
+local function OnAnimationPlayed(Character, Track)
+	if not Config.Enabled or Character == LocalPlayer.Character then
+		return
+	end
+
+	local Animation = Track.Animation
+	local AnimationId = Animation and NormalizeAnimationId(Animation.AnimationId)
+	local Category = AnimationId and AttackAnimations[AnimationId]
+
+	if not Category then
+		return
+	end
+
+	if Category == "M1" and not Config.DetectM1 then
+		return
+	end
+
+	if Category == "Special" and not Config.DetectSpecials then
+		return
+	end
+
+	task.delay(Config.ReactionDelay, function()
+		PerformWeave(Character)
+	end)
+end
+
+local function MonitorCharacter(Character)
+	if not Character or Character == LocalPlayer.Character then
+		return
+	end
+
+	local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+
+	if not Humanoid then
+		return
+	end
+
+	local Animator = Humanoid:FindFirstChildOfClass("Animator")
+
+	if not Animator or MonitoredAnimators[Animator] then
+		return
+	end
+
+	MonitoredAnimators[Animator] = Animator.AnimationPlayed:Connect(function(Track)
+		OnAnimationPlayed(Character, Track)
+	end)
+
+	Connections[#Connections + 1] = Character.AncestryChanged:Connect(function(_, Parent)
+		if Parent then
+			return
+		end
+
+		local Connection = MonitoredAnimators[Animator]
+
+		if Connection then
+			Connection:Disconnect()
+			MonitoredAnimators[Animator] = nil
+		end
+	end)
+end
+
+local function ScanCharacters()
+	local Live = workspace:FindFirstChild("Live")
+
+	if Live then
+		for _, Character in Live:GetChildren() do
+			MonitorCharacter(Character)
+		end
+	end
+
+	for _, Player in Players:GetPlayers() do
+		if Player ~= LocalPlayer and Player.Character then
+			MonitorCharacter(Player.Character)
+		end
+	end
+end
+
+local function GetGuiParent()
+	local Success, HiddenGui = pcall(function()
+		if gethui then
+			return gethui()
+		end
+	end)
+
+	if Success and HiddenGui then
+		return HiddenGui
+	end
+
+	local CoreSuccess = pcall(function()
+		return CoreGui.Name
+	end)
+
+	if CoreSuccess then
+		return CoreGui
+	end
+
+	return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local GuiParent = GetGuiParent()
+local PreviousGui = GuiParent:FindFirstChild("AutoWeave")
+
+if PreviousGui then
+	PreviousGui:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AutoWeave"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = GuiParent
+
+pcall(function()
+	if protectgui then
+		protectgui(ScreenGui)
+	end
+end)
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.fromOffset(286, 224)
+Main.Position = UDim2.new(0.5, -143, 0.5, -112)
+Main.BackgroundColor3 = Color3.fromRGB(20, 21, 24)
+Main.BorderSizePixel = 0
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(65, 68, 76)
+MainStroke.Transparency = 0.25
+MainStroke.Thickness = 1
+MainStroke.Parent = Main
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 42)
+TitleBar.BackgroundColor3 = Color3.fromRGB(28, 30, 34)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 12)
+TitleCorner.Parent = TitleBar
+
+local TitleCover = Instance.new("Frame")
+TitleCover.Size = UDim2.new(1, 0, 0, 12)
+TitleCover.Position = UDim2.new(0, 0, 1, -12)
+TitleCover.BackgroundColor3 = TitleBar.BackgroundColor3
+TitleCover.BorderSizePixel = 0
+TitleCover.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -78, 1, 0)
+Title.Position = UDim2.fromOffset(14, 0)
+Title.BackgroundTransparency = 1
+Title.Font = Enum.Font.GothamBold
+Title.Text = "AUTO WEAVE"
+Title.TextColor3 = Color3.fromRGB(240, 242, 247)
+Title.TextSize = 14
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+local Minimize = Instance.new("TextButton")
+Minimize.Size = UDim2.fromOffset(30, 28)
+Minimize.Position = UDim2.new(1, -68, 0, 7)
+Minimize.BackgroundColor3 = Color3.fromRGB(42, 44, 50)
+Minimize.Text = "—"
+Minimize.TextColor3 = Color3.fromRGB(210, 213, 220)
+Minimize.TextSize = 14
+Minimize.Font = Enum.Font.GothamBold
+Minimize.AutoButtonColor = false
+Minimize.Parent = TitleBar
+
+local MinimizeCorner = Instance.new("UICorner")
+MinimizeCorner.CornerRadius = UDim.new(0, 8)
+MinimizeCorner.Parent = Minimize
+
+local Delete = Instance.new("TextButton")
+Delete.Size = UDim2.fromOffset(30, 28)
+Delete.Position = UDim2.new(1, -34, 0, 7)
+Delete.BackgroundColor3 = Color3.fromRGB(58, 38, 42)
+Delete.Text = "×"
+Delete.TextColor3 = Color3.fromRGB(255, 170, 178)
+Delete.TextSize = 18
+Delete.Font = Enum.Font.GothamBold
+Delete.AutoButtonColor = false
+Delete.Parent = TitleBar
+
+local DeleteCorner = Instance.new("UICorner")
+DeleteCorner.CornerRadius = UDim.new(0, 8)
+DeleteCorner.Parent = Delete
+
+local Content = Instance.new("Frame")
+Content.Size = UDim2.new(1, -20, 1, -54)
+Content.Position = UDim2.fromOffset(10, 48)
+Content.BackgroundTransparency = 1
+Content.Parent = Main
+
+local ContentLayout = Instance.new("UIListLayout")
+ContentLayout.Padding = UDim.new(0, 7)
+ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ContentLayout.Parent = Content
+
+local function CreateToggle(Name, Default, Callback)
+	local Row = Instance.new("TextButton")
+	Row.Size = UDim2.new(1, 0, 0, 38)
+	Row.BackgroundColor3 = Color3.fromRGB(29, 31, 36)
+	Row.Text = ""
+	Row.AutoButtonColor = false
+	Row.Parent = Content
+
+	local Corner = Instance.new("UICorner")
+	Corner.CornerRadius = UDim.new(0, 9)
+	Corner.Parent = Row
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -58, 1, 0)
+	Label.Position = UDim2.fromOffset(12, 0)
+	Label.BackgroundTransparency = 1
+	Label.Font = Enum.Font.GothamMedium
+	Label.Text = Name
+	Label.TextColor3 = Color3.fromRGB(221, 224, 231)
+	Label.TextSize = 13
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Row
+
+	local Switch = Instance.new("Frame")
+	Switch.Size = UDim2.fromOffset(38, 20)
+	Switch.Position = UDim2.new(1, -48, 0.5, -10)
+	Switch.BorderSizePixel = 0
+	Switch.Parent = Row
+
+	local SwitchCorner = Instance.new("UICorner")
+	SwitchCorner.CornerRadius = UDim.new(1, 0)
+	SwitchCorner.Parent = Switch
+
+	local Knob = Instance.new("Frame")
+	Knob.Size = UDim2.fromOffset(16, 16)
+	Knob.Position = UDim2.fromOffset(2, 2)
+	Knob.BackgroundColor3 = Color3.fromRGB(239, 241, 246)
+	Knob.BorderSizePixel = 0
+	Knob.Parent = Switch
+
+	local KnobCorner = Instance.new("UICorner")
+	KnobCorner.CornerRadius = UDim.new(1, 0)
+	KnobCorner.Parent = Knob
+
+	local State = Default
+
+	local function Render()
+		Switch.BackgroundColor3 = State and Color3.fromRGB(86, 132, 255) or Color3.fromRGB(61, 64, 72)
+		Knob.Position = State and UDim2.fromOffset(20, 2) or UDim2.fromOffset(2, 2)
+	end
+
+	Row.MouseButton1Click:Connect(function()
+		State = not State
+		Render()
+		Callback(State)
+	end)
+
+	Render()
+	return Row
+end
+
+CreateToggle("Auto Weave", Config.Enabled, function(State)
+	Config.Enabled = State
+
+	if not State then
+		WeaveBusy = false
+		StopInternalWeave(0.05)
+	end
+
+	UpdateStatus(State and "Watching nearby attacks" or "Disabled")
+end)
+
+CreateToggle("React to M1s", Config.DetectM1, function(State)
+	Config.DetectM1 = State
+end)
+
+CreateToggle("React to specials", Config.DetectSpecials, function(State)
+	Config.DetectSpecials = State
+end)
+
+local Status = Instance.new("TextLabel")
+Status.Size = UDim2.new(1, 0, 0, 32)
+Status.BackgroundColor3 = Color3.fromRGB(25, 27, 31)
+Status.BorderSizePixel = 0
+Status.Font = Enum.Font.Gotham
+Status.TextColor3 = Color3.fromRGB(151, 157, 170)
+Status.TextSize = 11
+Status.TextWrapped = true
+Status.Parent = Content
+
+local StatusCorner = Instance.new("UICorner")
+StatusCorner.CornerRadius = UDim.new(0, 8)
+StatusCorner.Parent = Status
+
+UpdateStatus = function(Text)
+	if Status and Status.Parent then
+		Status.Text = Text .. "  •  " .. CountAttackAnimations() .. " attack IDs"
+	end
+end
+
+local OpenButton = Instance.new("TextButton")
+OpenButton.Name = "OpenButton"
+OpenButton.Size = UDim2.fromOffset(46, 46)
+OpenButton.Position = UDim2.new(0, 14, 0.55, 0)
+OpenButton.BackgroundColor3 = Color3.fromRGB(28, 30, 35)
+OpenButton.BorderSizePixel = 0
+OpenButton.Font = Enum.Font.GothamBold
+OpenButton.Text = "AW"
+OpenButton.TextColor3 = Color3.fromRGB(145, 172, 255)
+OpenButton.TextSize = 13
+OpenButton.Visible = false
+OpenButton.AutoButtonColor = false
+OpenButton.Parent = ScreenGui
+
+local OpenCorner = Instance.new("UICorner")
+OpenCorner.CornerRadius = UDim.new(1, 0)
+OpenCorner.Parent = OpenButton
+
+local OpenStroke = Instance.new("UIStroke")
+OpenStroke.Color = Color3.fromRGB(79, 86, 105)
+OpenStroke.Thickness = 1
+OpenStroke.Parent = OpenButton
+
+local function MakeDraggable(Handle, Object)
+	local Dragging = false
+	local DragStart
+	local StartPosition
+
+	Handle.InputBegan:Connect(function(Input)
+		if Input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and Input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+
+		Dragging = true
+		DragStart = Input.Position
+		StartPosition = Object.Position
+
+		Input.Changed:Connect(function()
+			if Input.UserInputState == Enum.UserInputState.End then
+				Dragging = false
+			end
+		end)
+	end)
+
+	UserInputService.InputChanged:Connect(function(Input)
+		if not Dragging then
+			return
+		end
+
+		if Input.UserInputType ~= Enum.UserInputType.MouseMovement
+			and Input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+
+		local Delta = Input.Position - DragStart
+		Object.Position = UDim2.new(
+			StartPosition.X.Scale,
+			StartPosition.X.Offset + Delta.X,
+			StartPosition.Y.Scale,
+			StartPosition.Y.Offset + Delta.Y
+		)
+	end)
+end
+
+MakeDraggable(TitleBar, Main)
+MakeDraggable(OpenButton, OpenButton)
+
+Minimize.MouseButton1Click:Connect(function()
+	Main.Visible = false
+	OpenButton.Visible = true
+end)
+
+OpenButton.MouseButton1Click:Connect(function()
+	OpenButton.Visible = false
+	Main.Visible = true
+end)
+
+Delete.MouseButton1Click:Connect(function()
+	Destroyed = true
+	Config.Enabled = false
+	WeaveBusy = false
+	StopInternalWeave(0.05)
+
+	for Animator, Connection in MonitoredAnimators do
+		Connection:Disconnect()
+		MonitoredAnimators[Animator] = nil
+	end
+
+	for _, Connection in Connections do
+		Connection:Disconnect()
+	end
+
+	ScreenGui:Destroy()
+end)
+
+local Scale = Instance.new("UIScale")
+local Viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+
+if UserInputService.TouchEnabled and Viewport then
+	Scale.Scale = math.clamp(math.min(Viewport.X / 420, Viewport.Y / 700), 0.78, 1)
+else
+	Scale.Scale = 1
+end
+
+Scale.Parent = Main
+
+local Live = workspace:FindFirstChild("Live")
+
+if Live then
+	ScanAnimations(Live)
+
+	Connections[#Connections + 1] = Live.ChildAdded:Connect(function(Character)
+		task.delay(0.25, function()
+			if not Destroyed then
+				ScanAnimations(Character)
+				MonitorCharacter(Character)
+				UpdateStatus(Config.Enabled and "Watching nearby attacks" or "Disabled")
+			end
+		end)
+	end)
+
+	Connections[#Connections + 1] = Live.DescendantAdded:Connect(function(Descendant)
+		if Descendant:IsA("Animation") then
+			RegisterAnimation(Descendant)
+		end
+
+		if Descendant:IsA("Animator") and Descendant.Parent and Descendant.Parent.Parent then
+			MonitorCharacter(Descendant.Parent.Parent)
+		end
+	end)
+end
+
+for _, Player in Players:GetPlayers() do
+	if Player ~= LocalPlayer then
+		Connections[#Connections + 1] = Player.CharacterAdded:Connect(function(Character)
+			task.delay(0.25, function()
+				if not Destroyed then
+					MonitorCharacter(Character)
+				end
+			end)
+		end)
+	end
+end
+
+Connections[#Connections + 1] = Players.PlayerAdded:Connect(function(Player)
+	if Player == LocalPlayer then
+		return
+	end
+
+	Connections[#Connections + 1] = Player.CharacterAdded:Connect(function(Character)
+		task.delay(0.25, function()
+			if not Destroyed then
+				MonitorCharacter(Character)
+			end
+		end)
+	end)
+end)
+
+Connections[#Connections + 1] = LocalPlayer.CharacterAdded:Connect(function(Character)
+	WeaveBusy = false
+	StopInternalWeave(0.05)
+
+	task.delay(0.5, function()
+		if not Destroyed then
+			ScanAnimations(Character)
+			ScanCharacters()
+			UpdateStatus(Config.Enabled and "Watching nearby attacks" or "Disabled")
+		end
+	end)
+
+	Connections[#Connections + 1] = Character:GetAttributeChangedSignal("WeaveStun"):Connect(function()
+		if Character:GetAttribute("WeaveStun") then
+			WeaveBusy = false
+			StopInternalWeave(0.05)
+		end
+	end)
+
+	local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+
+	if Humanoid then
+		Connections[#Connections + 1] = Humanoid.Died:Connect(function()
+			WeaveBusy = false
+			StopInternalWeave(0.05)
+		end)
+	end
+end)
+
+local CurrentCharacter = LocalPlayer.Character
+
+if CurrentCharacter then
+	Connections[#Connections + 1] = CurrentCharacter:GetAttributeChangedSignal("WeaveStun"):Connect(function()
+		if CurrentCharacter:GetAttribute("WeaveStun") then
+			WeaveBusy = false
+			StopInternalWeave(0.05)
+		end
+	end)
+
+	local CurrentHumanoid = CurrentCharacter:FindFirstChildOfClass("Humanoid")
+
+	if CurrentHumanoid then
+		Connections[#Connections + 1] = CurrentHumanoid.Died:Connect(function()
+			WeaveBusy = false
+			StopInternalWeave(0.05)
+		end)
+	end
+end
+
+ScanCharacters()
+UpdateStatus("Disabled")
