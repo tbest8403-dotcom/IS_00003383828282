@@ -223,9 +223,11 @@ local SpectatorRealHumanoid
 local SpectatorRealRoot
 local SpectatorOriginalCameraSubject
 local SpectatorOriginalCameraType
+local SpectatorOriginalSwimmingEnabled
 local SpectatorPreviousTargeting = false
 local SpectatorPartStates = {}
 local SpectatorRealParts = {}
+local SpectatorWaterSoundStates = {}
 local SpectatorDescendantAddedConnection
 local SpectatorDescendantRemovingConnection
 local SpectatorAnimationTracks = {}
@@ -805,8 +807,15 @@ local function TryAutoGrabGun()
 	local Character = LocalPlayer.Character
 	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
 	local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+	local TouchPart = Character and (
+		Character:FindFirstChild("Head")
+		or Character:FindFirstChild("UpperTorso")
+		or Character:FindFirstChild("Torso")
+		or Character:FindFirstChild("LowerTorso")
+		or Root
+	)
 
-	if not TouchInterest or not Humanoid or Humanoid.Health <= 0 or not Root then
+	if not TouchInterest or not Humanoid or Humanoid.Health <= 0 or not Root or not TouchPart or not TouchPart:IsA("BasePart") then
 		return
 	end
 
@@ -817,22 +826,44 @@ local function TryAutoGrabGun()
 			return
 		end
 
-		local OriginalCanTouch = Root.CanTouch
-		local OriginalCanQuery = Root.CanQuery
+		local OriginalCanTouch = TouchPart.CanTouch
+		local OriginalCanQuery = TouchPart.CanQuery
+
+		local function FireTouch(State)
+			TouchPart.CanTouch = true
+			TouchPart.CanQuery = true
+			firetouchinterest(TouchPart, GunDrop, State)
+			TouchPart.CanTouch = OriginalCanTouch
+			TouchPart.CanQuery = OriginalCanQuery
+		end
 
 		local Success, ErrorMessage = pcall(function()
-			Root.CanTouch = true
-			Root.CanQuery = true
-			firetouchinterest(Root, GunDrop, 0)
+			FireTouch(0)
 			task.wait(AutoGrabTouchDuration)
-			Root.CanTouch = true
-			Root.CanQuery = true
-			firetouchinterest(Root, GunDrop, 1)
+			FireTouch(1)
 		end)
 
-		if Root.Parent then
-			Root.CanTouch = OriginalCanTouch
-			Root.CanQuery = OriginalCanQuery
+		if TouchPart.Parent then
+			TouchPart.CanTouch = OriginalCanTouch
+			TouchPart.CanQuery = OriginalCanQuery
+		end
+
+		if SpectatorEnabled and SpectatorClone and SpectatorClone.Parent then
+			for _, Part in ipairs(SpectatorRealParts) do
+				if Part and Part.Parent then
+					Part.CanCollide = false
+					Part.CanTouch = false
+					Part.CanQuery = false
+					Part.LocalTransparencyModifier = 1
+				end
+			end
+
+			CurrentCamera = workspace.CurrentCamera or CurrentCamera
+
+			if SpectatorCloneHumanoid and SpectatorCloneHumanoid.Parent then
+				CurrentCamera.CameraType = Enum.CameraType.Custom
+				CurrentCamera.CameraSubject = SpectatorCloneHumanoid
+			end
 		end
 
 		AutoGrabGunBusy = false
@@ -998,6 +1029,40 @@ local function TrackSpectatorPart(Part)
 	Part.LocalTransparencyModifier = 1
 end
 
+local function IsWaterSound(Instance)
+	if not Instance:IsA("Sound") then
+		return false
+	end
+
+	local Name = string.lower(Instance.Name)
+	return Name == "swimming" or Name == "splash" or string.find(Name, "water", 1, true) ~= nil
+end
+
+local function TrackSpectatorWaterSound(Sound)
+	if not IsWaterSound(Sound) or SpectatorWaterSoundStates[Sound] then
+		return
+	end
+
+	SpectatorWaterSoundStates[Sound] = Sound.Volume
+	Sound:Stop()
+	Sound.Volume = 0
+end
+
+local function UntrackSpectatorWaterSound(Sound)
+	local OriginalVolume = SpectatorWaterSoundStates[Sound]
+
+	if OriginalVolume ~= nil and Sound.Parent then
+		Sound.Volume = OriginalVolume
+	end
+
+	SpectatorWaterSoundStates[Sound] = nil
+end
+
+local function TrackSpectatorDescendant(Descendant)
+	TrackSpectatorPart(Descendant)
+	TrackSpectatorWaterSound(Descendant)
+end
+
 local function UntrackSpectatorPart(Part)
 	local State = SpectatorPartStates[Part]
 
@@ -1016,6 +1081,40 @@ local function UntrackSpectatorPart(Part)
 			break
 		end
 	end
+end
+
+local function UntrackSpectatorDescendant(Descendant)
+	UntrackSpectatorPart(Descendant)
+	UntrackSpectatorWaterSound(Descendant)
+end
+
+local function SuppressSpectatorWater()
+	if SpectatorRealHumanoid and SpectatorRealHumanoid.Parent then
+		SpectatorRealHumanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming, false)
+
+		if SpectatorRealHumanoid:GetState() == Enum.HumanoidStateType.Swimming then
+			SpectatorRealHumanoid:ChangeState(Enum.HumanoidStateType.Running)
+		end
+	end
+
+	for Sound in pairs(SpectatorWaterSoundStates) do
+		if Sound and Sound.Parent then
+			Sound:Stop()
+			Sound.Volume = 0
+		else
+			SpectatorWaterSoundStates[Sound] = nil
+		end
+	end
+end
+
+local function RestoreSpectatorWaterSounds()
+	for Sound, OriginalVolume in pairs(SpectatorWaterSoundStates) do
+		if Sound and Sound.Parent then
+			Sound.Volume = OriginalVolume
+		end
+	end
+
+	table.clear(SpectatorWaterSoundStates)
 end
 
 local function RestoreSpectatorPartStates()
@@ -1050,6 +1149,8 @@ MoveRealCharacterBelowPreview = function(PreviewCFrame)
 			Part.CanTouch = false
 			Part.CanQuery = false
 			Part.LocalTransparencyModifier = 1
+			Part.AssemblyLinearVelocity = Vector3.zero
+			Part.AssemblyAngularVelocity = Vector3.zero
 		else
 			SpectatorPartStates[Part] = nil
 			table.remove(SpectatorRealParts, Index)
@@ -1063,6 +1164,9 @@ MoveRealCharacterBelowPreview = function(PreviewCFrame)
 	local BelowCFrame = CFrame.new(PreviewCFrame.Position - Vector3.new(0, SpectatorDepth, 0)) * PreviewCFrame.Rotation
 	SpectatorRealCharacter:PivotTo(BelowCFrame)
 	SpectatorRealRoot.CFrame = BelowCFrame
+	SpectatorRealRoot.AssemblyLinearVelocity = Vector3.zero
+	SpectatorRealRoot.AssemblyAngularVelocity = Vector3.zero
+	SuppressSpectatorWater()
 end
 
 BeginPreviewSyncedAction = function(Character)
@@ -1130,6 +1234,11 @@ DisableSpectator = function()
 		ClearCharacterVelocity(RealCharacter)
 	end
 
+	if SpectatorOriginalSwimmingEnabled ~= nil and SpectatorRealHumanoid and SpectatorRealHumanoid.Parent then
+		SpectatorRealHumanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming, SpectatorOriginalSwimmingEnabled)
+	end
+
+	RestoreSpectatorWaterSounds()
 	RestoreSpectatorPartStates()
 	CurrentCamera = workspace.CurrentCamera or CurrentCamera
 
@@ -1163,6 +1272,7 @@ DisableSpectator = function()
 	SpectatorRealRoot = nil
 	SpectatorOriginalCameraSubject = nil
 	SpectatorOriginalCameraType = nil
+	SpectatorOriginalSwimmingEnabled = nil
 
 	if SpectatorControl and SpectatorControl:Get() then
 		SpectatorControl:Set(false, true, true)
@@ -1223,6 +1333,9 @@ EnableSpectator = function()
 			Descendant:Destroy()
 		elseif Descendant:IsA("LocalScript") and Descendant.Name ~= "Animate" then
 			Descendant:Destroy()
+		elseif IsWaterSound(Descendant) then
+			Descendant:Stop()
+			Descendant.Volume = 0
 		elseif Descendant:IsA("BasePart") then
 			Descendant.Transparency = math.max(Descendant.Transparency, SpectatorTransparency)
 			Descendant.LocalTransparencyModifier = 0
@@ -1251,13 +1364,14 @@ EnableSpectator = function()
 	DisconnectSpectatorPartTracking()
 	table.clear(SpectatorPartStates)
 	table.clear(SpectatorRealParts)
+	table.clear(SpectatorWaterSoundStates)
 
 	for _, Descendant in ipairs(RealCharacter:GetDescendants()) do
-		TrackSpectatorPart(Descendant)
+		TrackSpectatorDescendant(Descendant)
 	end
 
-	SpectatorDescendantAddedConnection = RealCharacter.DescendantAdded:Connect(TrackSpectatorPart)
-	SpectatorDescendantRemovingConnection = RealCharacter.DescendantRemoving:Connect(UntrackSpectatorPart)
+	SpectatorDescendantAddedConnection = RealCharacter.DescendantAdded:Connect(TrackSpectatorDescendant)
+	SpectatorDescendantRemovingConnection = RealCharacter.DescendantRemoving:Connect(UntrackSpectatorDescendant)
 	SpectatorClone = Clone
 	SpectatorCloneHumanoid = CloneHumanoid
 	SpectatorCloneRoot = CloneRoot
@@ -1267,6 +1381,13 @@ EnableSpectator = function()
 	CurrentCamera = workspace.CurrentCamera or CurrentCamera
 	SpectatorOriginalCameraSubject = CurrentCamera.CameraSubject
 	SpectatorOriginalCameraType = CurrentCamera.CameraType
+	SpectatorOriginalSwimmingEnabled = RealHumanoid:GetStateEnabled(Enum.HumanoidStateType.Swimming)
+	RealHumanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming, false)
+
+	if RealHumanoid:GetState() == Enum.HumanoidStateType.Swimming then
+		RealHumanoid:ChangeState(Enum.HumanoidStateType.Running)
+	end
+
 	SpectatorPreviousTargeting = TargetingEnabled
 	SpectatorEnabled = true
 
@@ -1289,6 +1410,7 @@ EnableSpectator = function()
 			CurrentCamera.CameraSubject = SpectatorCloneHumanoid
 		end
 
+		SuppressSpectatorWater()
 		MoveRealCharacterBelowPreview(SpectatorClone:GetPivot())
 	end
 
