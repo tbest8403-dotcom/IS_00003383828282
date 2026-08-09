@@ -54,6 +54,12 @@ if ExistingClone then
 	ExistingClone:Destroy()
 end
 
+local ExistingGunDropHighlight = workspace:FindFirstChild("_MXGunDropHighlight", true)
+while ExistingGunDropHighlight do
+	ExistingGunDropHighlight:Destroy()
+	ExistingGunDropHighlight = workspace:FindFirstChild("_MXGunDropHighlight", true)
+end
+
 for _, Container in ipairs({ workspace, ReplicatedStorage }) do
 	local ExistingCage = Container:FindFirstChild("_MXAutoGrabCage")
 	local ExistingBox = Container:FindFirstChild("_MXAutoGrabBox")
@@ -185,6 +191,7 @@ local CachedPlayers = Players:GetPlayers()
 local CharacterPartCache = setmetatable({}, { __mode = "k" })
 local OriginalManualActivation = setmetatable({}, { __mode = "k" })
 local RoleHighlights = {}
+local GunDropHighlight
 local PlayerRoles = {}
 local CurrentTargetPlayer
 local CurrentTargetPart
@@ -423,6 +430,13 @@ local function ClearRoleHighlight(Player)
 	end
 end
 
+local function ClearGunDropHighlight()
+	if GunDropHighlight then
+		GunDropHighlight:Destroy()
+		GunDropHighlight = nil
+	end
+end
+
 local function ClearAllRoleHighlights()
 	for _, Highlight in pairs(RoleHighlights) do
 		if Highlight then
@@ -431,6 +445,32 @@ local function ClearAllRoleHighlights()
 	end
 
 	table.clear(RoleHighlights)
+	ClearGunDropHighlight()
+end
+
+local function UpdateGunDropVisual()
+	local GunDrop = workspace:FindFirstChild("GunDrop", true)
+
+	if not RoleVisualsEnabled or not GunDrop or not (GunDrop:IsA("BasePart") or GunDrop:IsA("Model")) then
+		ClearGunDropHighlight()
+		return
+	end
+
+	if GunDropHighlight and (not GunDropHighlight.Parent or GunDropHighlight.Adornee ~= GunDrop) then
+		ClearGunDropHighlight()
+	end
+
+	if not GunDropHighlight then
+		GunDropHighlight = Instance.new("Highlight")
+		GunDropHighlight.Name = "_MXGunDropHighlight"
+		GunDropHighlight.Adornee = GunDrop
+		GunDropHighlight.FillColor = Color3.fromRGB(255, 190, 55)
+		GunDropHighlight.FillTransparency = 0.72
+		GunDropHighlight.OutlineColor = Color3.fromRGB(255, 230, 120)
+		GunDropHighlight.OutlineTransparency = 0
+		GunDropHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		GunDropHighlight.Parent = GunDrop
+	end
 end
 
 local function UpdateRoleVisual(Player)
@@ -511,6 +551,8 @@ local function RefreshRoleVisuals()
 			ClearRoleHighlight(Player)
 		end
 	end
+
+	UpdateGunDropVisual()
 end
 
 local function AddCachedPlayer(Player)
