@@ -25,6 +25,9 @@ local MinimumPrediction = 0
 local MaximumPrediction = 0.5
 local MaximumHorizontalVelocity = 110
 local MaximumVerticalVelocity = 125
+local PredictionVelocitySmoothing = 16
+local PredictionWalkSpeedMultiplier = 1.75
+local PredictionAimPartBias = 0.62
 local ClickDebounce = 0.08
 local StaffShotHeight = 8
 local AutoGrabGunInterval = 0.12
@@ -190,6 +193,7 @@ local Connections = {}
 local CachedPlayers = Players:GetPlayers()
 local CharacterPartCache = setmetatable({}, { __mode = "k" })
 local OriginalManualActivation = setmetatable({}, { __mode = "k" })
+local PredictionVelocitySamples = setmetatable({}, { __mode = "k" })
 local RoleHighlights = {}
 local GunDropHighlight
 local PlayerRoles = {}
@@ -606,6 +610,59 @@ local function HasClearShot(OriginPosition, TargetCharacter, TargetPosition)
 	return Result == nil or Result.Instance:IsDescendantOf(TargetCharacter)
 end
 
+local function GetAvatarPredictionScale(Humanoid)
+	local TotalScale = 0
+	local ScaleCount = 0
+
+	for _, ScaleName in ipairs({ "BodyWidthScale", "BodyDepthScale", "BodyHeightScale" }) do
+		local ScaleValue = Humanoid:FindFirstChild(ScaleName)
+
+		if ScaleValue and ScaleValue:IsA("NumberValue") then
+			TotalScale = TotalScale + ScaleValue.Value
+			ScaleCount = ScaleCount + 1
+		end
+	end
+
+	if ScaleCount == 0 then
+		return 1
+	end
+
+	local AverageScale = TotalScale / ScaleCount
+	return math.clamp(0.75 + AverageScale * 0.25, 0.85, 1.05)
+end
+
+local function GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
+	local CurrentTime = os.clock()
+	local RawVelocity = Root.AssemblyLinearVelocity
+	local Sample = PredictionVelocitySamples[TargetCharacter]
+	local FilteredVelocity = RawVelocity
+
+	if Sample and CurrentTime - Sample.Time <= 0.35 then
+		local DeltaTime = math.clamp(CurrentTime - Sample.Time, 0, 0.1)
+		local Alpha = 1 - math.exp(-PredictionVelocitySmoothing * DeltaTime)
+		FilteredVelocity = Sample.Velocity:Lerp(RawVelocity, Alpha)
+	end
+
+	PredictionVelocitySamples[TargetCharacter] = {
+		Velocity = FilteredVelocity,
+		Time = CurrentTime
+	}
+
+	local HorizontalVelocity = Vector3.new(FilteredVelocity.X, 0, FilteredVelocity.Z)
+	local HorizontalLimit = math.min(
+		MaximumHorizontalVelocity,
+		math.max(20, Humanoid.WalkSpeed * PredictionWalkSpeedMultiplier)
+	)
+
+	if HorizontalVelocity.Magnitude > HorizontalLimit then
+		HorizontalVelocity = HorizontalVelocity.Unit * HorizontalLimit
+	elseif HorizontalVelocity.Magnitude < 1 then
+		HorizontalVelocity = Vector3.zero
+	end
+
+	return HorizontalVelocity, FilteredVelocity.Y
+end
+
 local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverride)
 	local Root = TargetCharacter:FindFirstChild("HumanoidRootPart")
 	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
@@ -615,18 +672,17 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		return AimPart.Position
 	end
 
-	local Velocity = Root.AssemblyLinearVelocity
+	ActivePrediction = math.clamp(ActivePrediction, MinimumPrediction, MaximumPrediction)
+		* GetAvatarPredictionScale(Humanoid)
+
 	local State = Humanoid:GetState()
-	local Airborne = Humanoid.FloorMaterial == Enum.Material.Air
-		or State == Enum.HumanoidStateType.Jumping
+	local Airborne = State == Enum.HumanoidStateType.Jumping
 		or State == Enum.HumanoidStateType.Freefall
-	local HorizontalVelocity = Vector3.new(
-		math.clamp(Velocity.X, -MaximumHorizontalVelocity, MaximumHorizontalVelocity),
-		0,
-		math.clamp(Velocity.Z, -MaximumHorizontalVelocity, MaximumHorizontalVelocity)
-	)
-	local VerticalVelocity = Airborne and math.clamp(Velocity.Y, -MaximumVerticalVelocity, MaximumVerticalVelocity) or 0
-	local PredictedPosition = AimPart.Position
+	local HorizontalVelocity, RawVerticalVelocity = GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
+	local VerticalVelocity = Airborne and math.clamp(RawVerticalVelocity, -MaximumVerticalVelocity, MaximumVerticalVelocity) or 0
+	local AimOffset = AimPart.Position - Root.Position
+	local StableAimPosition = Root.Position + AimOffset * PredictionAimPartBias
+	local PredictedPosition = StableAimPosition
 		+ HorizontalVelocity * ActivePrediction
 		+ Vector3.new(0, VerticalVelocity * ActivePrediction, 0)
 
