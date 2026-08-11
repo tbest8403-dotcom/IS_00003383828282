@@ -28,6 +28,19 @@ local MaximumVerticalVelocity = 125
 local PredictionVelocitySmoothing = 16
 local PredictionWalkSpeedMultiplier = 1.75
 local PredictionAimPartBias = 0.62
+local VerticalPredictionMultiplier = 0.62
+local RisingPredictionMultiplier = 0.22
+local FallingPredictionMultiplier = 0.8
+local VerticalPredictionDeadzone = 5
+local VerticalGravityMultiplier = 0.55
+local MaximumRisingPredictionOffset = 1.1
+local PingPredictionWeight = 0.5
+local VerticalPingInfluence = 0.05
+local MaximumPingPrediction = 0.12
+local MaximumTotalPrediction = 0.6
+local PingUpdateInterval = 0.25
+local PingSmoothingAlpha = 0.18
+local ClosingSpeedThreshold = 1
 local ClickDebounce = 0.08
 local StaffShotHeight = 8
 local AutoGrabGunInterval = 0.12
@@ -35,6 +48,8 @@ local AutoGrabTouchDuration = 0.05
 local RoleRefreshInterval = 0.2
 local LastShotTime = 0
 local AutoGrabGunAccumulator = 0
+local SmoothedNetworkPing
+local LastNetworkPingUpdate = 0
 local LastTouchPosition = Vector2.new(CurrentCamera.ViewportSize.X / 2, CurrentCamera.ViewportSize.Y / 2)
 local SpectatorRenderBindingName = "_MXStaffSpectator_" .. tostring(LocalPlayer.UserId)
 local SpectatorFinalBindingName = SpectatorRenderBindingName .. "_Final"
@@ -248,6 +263,10 @@ local ClearShotParameters = RaycastParams.new()
 local ClearShotFilterCharacter
 ClearShotParameters.FilterType = Enum.RaycastFilterType.Exclude
 ClearShotParameters.IgnoreWater = true
+
+local PredictionGroundParameters = RaycastParams.new()
+PredictionGroundParameters.FilterType = Enum.RaycastFilterType.Exclude
+PredictionGroundParameters.IgnoreWater = true
 
 local CharacterCornerSigns = {
 	Vector3.new(-1, -1, -1),
@@ -631,6 +650,31 @@ local function GetAvatarPredictionScale(Humanoid)
 	return math.clamp(0.75 + AverageScale * 0.25, 0.85, 1.05)
 end
 
+local function GetPingPredictionOffset()
+	local CurrentTime = os.clock()
+
+	if CurrentTime - LastNetworkPingUpdate >= PingUpdateInterval then
+		LastNetworkPingUpdate = CurrentTime
+
+		local Success, NetworkPing = pcall(function()
+			return LocalPlayer:GetNetworkPing()
+		end)
+
+		if Success and type(NetworkPing) == "number" and NetworkPing == NetworkPing and NetworkPing >= 0 then
+			NetworkPing = math.clamp(NetworkPing, 0, MaximumPingPrediction / PingPredictionWeight)
+
+			if SmoothedNetworkPing then
+				SmoothedNetworkPing = SmoothedNetworkPing
+					+ (NetworkPing - SmoothedNetworkPing) * PingSmoothingAlpha
+			else
+				SmoothedNetworkPing = NetworkPing
+			end
+		end
+	end
+
+	return math.clamp((SmoothedNetworkPing or 0) * PingPredictionWeight, 0, MaximumPingPrediction)
+end
+
 local function GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
 	local CurrentTime = os.clock()
 	local RawVelocity = Root.AssemblyLinearVelocity
@@ -660,34 +704,113 @@ local function GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
 		HorizontalVelocity = Vector3.zero
 	end
 
-	return HorizontalVelocity, FilteredVelocity.Y
+	return HorizontalVelocity, RawVelocity.Y
 end
 
 local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverride)
 	local Root = TargetCharacter:FindFirstChild("HumanoidRootPart")
 	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
-	local ActivePrediction = PredictionOverride == nil and PredictionTime or PredictionOverride
+	local RequestedPrediction = PredictionOverride == nil and PredictionTime or PredictionOverride
 
-	if not Root or not Humanoid or ActivePrediction <= 0 then
+	if not Root or not Humanoid or RequestedPrediction <= 0 then
 		return AimPart.Position
 	end
 
-	ActivePrediction = math.clamp(ActivePrediction, MinimumPrediction, MaximumPrediction)
-		* GetAvatarPredictionScale(Humanoid)
+	local AvatarPredictionScale = GetAvatarPredictionScale(Humanoid)
+	local ManualPrediction = math.clamp(RequestedPrediction, MinimumPrediction, MaximumPrediction)
+		* AvatarPredictionScale
+	local PingPrediction = GetPingPredictionOffset() * AvatarPredictionScale
+	local ActivePrediction = math.clamp(ManualPrediction + PingPrediction, MinimumPrediction, MaximumTotalPrediction)
+	local VerticalActivePrediction = math.clamp(
+		ManualPrediction + PingPrediction * VerticalPingInfluence,
+		MinimumPrediction,
+		MaximumTotalPrediction
+	)
 
 	local State = Humanoid:GetState()
 	local Airborne = State == Enum.HumanoidStateType.Jumping
 		or State == Enum.HumanoidStateType.Freefall
 	local HorizontalVelocity, RawVerticalVelocity = GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
 	local VerticalVelocity = Airborne and math.clamp(RawVerticalVelocity, -MaximumVerticalVelocity, MaximumVerticalVelocity) or 0
+	local VerticalOffset = 0
+
+	if Airborne and math.abs(VerticalVelocity) > VerticalPredictionDeadzone then
+		local ActiveVerticalMultiplier = VerticalVelocity > 0
+			and RisingPredictionMultiplier
+			or VerticalPredictionMultiplier
+		local VerticalPredictionTime = VerticalActivePrediction * ActiveVerticalMultiplier
+
+		if VerticalVelocity < 0 then
+			VerticalPredictionTime = VerticalPredictionTime * FallingPredictionMultiplier
+		end
+
+		VerticalOffset = VerticalVelocity * VerticalPredictionTime
+			- 0.5 * workspace.Gravity * VerticalPredictionTime * VerticalPredictionTime * VerticalGravityMultiplier
+
+		local MaximumVerticalOffset = math.clamp(Humanoid.HipHeight + Root.Size.Y * 0.75, 2.5, 4)
+		local MaximumUpwardOffset = math.min(MaximumVerticalOffset, MaximumRisingPredictionOffset)
+		VerticalOffset = math.clamp(VerticalOffset, -MaximumVerticalOffset, MaximumUpwardOffset)
+	end
+
 	local AimOffset = AimPart.Position - Root.Position
-	local StableAimPosition = Root.Position + AimOffset * PredictionAimPartBias
-	local PredictedPosition = StableAimPosition
-		+ HorizontalVelocity * ActivePrediction
-		+ Vector3.new(0, VerticalVelocity * ActivePrediction, 0)
+	local ActiveAimPartBias = Airborne and 0.48 or PredictionAimPartBias
+	local AirborneAimLowering = 0
 
 	if Airborne then
-		PredictedPosition = PredictedPosition + Vector3.new(0, -0.5 * workspace.Gravity * ActivePrediction * ActivePrediction, 0)
+		AirborneAimLowering = VerticalVelocity > VerticalPredictionDeadzone and 0.85 or 0.55
+	end
+
+	local StableAimPosition = Root.Position
+		+ AimOffset * ActiveAimPartBias
+		- Vector3.new(0, AirborneAimLowering, 0)
+	local HorizontalOffset = HorizontalVelocity * ActivePrediction
+	local LocalCharacter = LocalPlayer.Character
+	local LocalRoot = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
+	local ClosingSpeed = 0
+
+	if LocalRoot then
+		local ToShooter = Vector3.new(
+			LocalRoot.Position.X - Root.Position.X,
+			0,
+			LocalRoot.Position.Z - Root.Position.Z
+		)
+
+		if ToShooter.Magnitude > 0.01 then
+			ClosingSpeed = HorizontalVelocity:Dot(ToShooter.Unit)
+
+			if ClosingSpeed > ClosingSpeedThreshold then
+				local MaximumClosingLead = math.max(ToShooter.Magnitude - 2, 0)
+
+				if HorizontalOffset.Magnitude > MaximumClosingLead then
+					HorizontalOffset = MaximumClosingLead > 0
+						and HorizontalOffset.Unit * MaximumClosingLead
+						or Vector3.zero
+				end
+			end
+		end
+	end
+
+	local PredictedPosition = StableAimPosition
+		+ HorizontalOffset
+		+ Vector3.new(0, VerticalOffset, 0)
+
+	if ClosingSpeed > ClosingSpeedThreshold then
+		PredictionGroundParameters.FilterDescendantsInstances = LocalCharacter
+			and { TargetCharacter, LocalCharacter }
+			or { TargetCharacter }
+
+		local RayOrigin = Vector3.new(PredictedPosition.X, Root.Position.Y + 0.5, PredictedPosition.Z)
+		local RayDistance = math.max(10, Humanoid.HipHeight + Root.Size.Y + 6)
+		local GroundResult = workspace:Raycast(RayOrigin, Vector3.new(0, -RayDistance, 0), PredictionGroundParameters)
+
+		if GroundResult then
+			local MinimumAimHeight = math.clamp(Humanoid.HipHeight + Root.Size.Y * 0.5, 2.5, 4)
+			local MinimumAimY = GroundResult.Position.Y + MinimumAimHeight
+
+			if PredictedPosition.Y < MinimumAimY then
+				PredictedPosition = Vector3.new(PredictedPosition.X, MinimumAimY, PredictedPosition.Z)
+			end
+		end
 	end
 
 	return PredictedPosition
@@ -1872,7 +1995,7 @@ local function ShootMurdererPrivilege()
 
 	if Success then
 		LastShotTime = os.clock()
-		SetStatus("Shot sent to " .. Murderer.DisplayName .. " with " .. string.format("%.2f", PredictionTime) .. "s prediction")
+		SetStatus("Shot sent to " .. Murderer.DisplayName .. " with adaptive prediction")
 		Window:Notify({
 			Title = "Shoot Murderer",
 			Content = "Shot sent to " .. Murderer.DisplayName .. " and position restored",
