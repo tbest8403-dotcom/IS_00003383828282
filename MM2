@@ -116,7 +116,25 @@ local TargetingSettings = {
 	MinimumAimInset = 0.08,
 	VisibleAimProbeRatio = 0.28,
 	ClickDebounce = 0.08,
-	StaffShotHeight = 8,
+	StaffShotMinimumMuzzleClearance = 0.35,
+	StaffShotMaximumMuzzleClearance = 3,
+	StaffShotMuzzleSurfaceGap = 0.25,
+	StaffShotSurfaceProbeDistance = 32,
+	StaffShotMovementAlignmentSpeed = 2.5,
+	StaffShotDiagonalWeight = 0.68,
+	StaffShotTeleportDelay = 0.01,
+	StaffShotEquipDelay = 0.01,
+	StaffShotBaseLead = 0.008,
+	StaffShotPingLeadScale = 0.82,
+	StaffShotMaximumLeadTime = 0.09,
+	StaffShotHorizontalIntentBlend = 0.18,
+	StaffShotHorizontalLeadRadiusScale = 1.5,
+	StaffShotMinimumHorizontalLeadLimit = 0.35,
+	StaffShotMaximumHorizontalLeadLimit = 1.6,
+	StaffShotVerticalLeadScale = 0.75,
+	StaffShotMaximumVerticalLead = 1.8,
+	StaffShotRayLength = 512,
+	StaffShotPostFireHold = 0.01,
 	AutoGrabInterval = 0.12,
 	AutoGrabTouchDuration = 0.05,
 	RoleRefreshInterval = 0.2,
@@ -2757,7 +2775,7 @@ local function ShootMurdererPrivilege()
 			AutoEquippedGun = StoredGun
 			pcall(function()
 				Humanoid:EquipTool(StoredGun)
-				RunService.Heartbeat:Wait()
+				task.wait(TargetingSettings.StaffShotEquipDelay)
 			end)
 			Gun, Shoot, OriginAttachment = GetEquippedGun()
 			EquippedByScript = Gun == StoredGun
@@ -2777,6 +2795,7 @@ local function ShootMurdererPrivilege()
 
 	local OriginalPivot = Character:GetPivot()
 	local OriginalRootCFrame = Root.CFrame
+	local RootRelativeToPivot = OriginalPivot:ToObjectSpace(OriginalRootCFrame)
 	local OriginalLinearVelocity = Root.AssemblyLinearVelocity
 	local OriginalAngularVelocity = Root.AssemblyAngularVelocity
 	local OriginalAutoRotate = Humanoid.AutoRotate
@@ -2802,30 +2821,258 @@ local function ShootMurdererPrivilege()
 	Humanoid.Sit = false
 	Humanoid.PlatformStand = false
 	local Success, ErrorMessage = pcall(function()
-		local PredictedPosition = GetPredictedAimPosition(MurdererCharacter, AimPart)
-		local AbovePosition = MurdererRoot.Position + Vector3.new(0, TargetingSettings.StaffShotHeight, 0)
-		local FlatLookPosition = Vector3.new(PredictedPosition.X, AbovePosition.Y, PredictedPosition.Z)
+		local PlacementRaycastParameters = RaycastParams.new()
+		PlacementRaycastParameters.FilterType = Enum.RaycastFilterType.Exclude
+		PlacementRaycastParameters.FilterDescendantsInstances = { Character, MurdererCharacter }
+		PlacementRaycastParameters.IgnoreWater = true
+		local TargetSurfaceRaycastParameters = RaycastParams.new()
+		TargetSurfaceRaycastParameters.FilterType = Enum.RaycastFilterType.Include
+		TargetSurfaceRaycastParameters.IgnoreWater = true
 
-		if (FlatLookPosition - AbovePosition).Magnitude < 0.01 then
-			FlatLookPosition = AbovePosition + Vector3.new(OriginalRootCFrame.LookVector.X, 0, OriginalRootCFrame.LookVector.Z)
+		local MuzzleOffset = Root.CFrame:PointToObjectSpace(OriginAttachment.WorldPosition)
+
+		local function ResolveStaffAimPosition()
+			local CurrentRoot = MurdererCharacter:FindFirstChild("HumanoidRootPart")
+			local CurrentHumanoid = MurdererCharacter:FindFirstChildOfClass("Humanoid")
+			local CurrentAimPart = GetPreferredAimPart(MurdererCharacter)
+
+			if not CurrentRoot
+				or not CurrentHumanoid
+				or CurrentHumanoid.Health <= 0
+				or not CurrentAimPart then
+				error("The murderer moved or died before the shot")
+			end
+
+			local AimProfile = GetAvatarAimProfile(MurdererCharacter, CurrentRoot, CurrentAimPart)
+			local RawVelocity = CurrentRoot.AssemblyLinearVelocity
+			local HorizontalVelocity = Vector3.new(RawVelocity.X, 0, RawVelocity.Z)
+
+			if HorizontalVelocity.Magnitude > TargetingSettings.MaximumHorizontalSpeed then
+				HorizontalVelocity = HorizontalVelocity.Unit * TargetingSettings.MaximumHorizontalSpeed
+			end
+
+			local MoveDirection = Vector3.new(CurrentHumanoid.MoveDirection.X, 0, CurrentHumanoid.MoveDirection.Z)
+
+			if MoveDirection.Magnitude > 0.01 then
+				local IntendedVelocity = MoveDirection.Unit
+					* math.min(CurrentHumanoid.WalkSpeed, TargetingSettings.MaximumHorizontalSpeed)
+				HorizontalVelocity = HorizontalVelocity:Lerp(
+					IntendedVelocity,
+					TargetingSettings.StaffShotHorizontalIntentBlend
+				)
+			end
+
+			GetPingPredictionOffset()
+			local LeadTime = math.clamp(
+				TargetingSettings.StaffShotBaseLead
+					+ (SmoothedNetworkPing or 0) * TargetingSettings.StaffShotPingLeadScale,
+				0,
+				TargetingSettings.StaffShotMaximumLeadTime
+			)
+			local HorizontalOffset = HorizontalVelocity * LeadTime
+			local HorizontalLeadLimit = math.clamp(
+				AimProfile.CoreHorizontalRadius * TargetingSettings.StaffShotHorizontalLeadRadiusScale,
+				TargetingSettings.StaffShotMinimumHorizontalLeadLimit,
+				TargetingSettings.StaffShotMaximumHorizontalLeadLimit
+			)
+
+			if HorizontalOffset.Magnitude > HorizontalLeadLimit then
+				HorizontalOffset = HorizontalOffset.Unit * HorizontalLeadLimit
+			end
+
+			local State = CurrentHumanoid:GetState()
+			local Airborne = State == Enum.HumanoidStateType.Jumping
+				or State == Enum.HumanoidStateType.Freefall
+				or CurrentHumanoid.FloorMaterial == Enum.Material.Air
+			local VerticalVelocity = math.clamp(
+				RawVelocity.Y,
+				-TargetingSettings.MaximumVerticalSpeed,
+				TargetingSettings.MaximumVerticalSpeed
+			)
+
+			if not Airborne and VerticalVelocity < TargetingSettings.JumpRiseThreshold then
+				VerticalVelocity = 0
+			end
+
+			local VerticalLeadTime = LeadTime * TargetingSettings.StaffShotVerticalLeadScale
+			local VerticalOffset = VerticalVelocity * VerticalLeadTime
+				- 0.5 * workspace.Gravity * VerticalLeadTime * VerticalLeadTime
+			local VerticalLeadLimit = math.min(
+				TargetingSettings.StaffShotMaximumVerticalLead,
+				math.max(AimProfile.BodyHeight * 0.42, AimProfile.CoreHalfHeight * 1.3, 0.75)
+			)
+			VerticalOffset = math.clamp(VerticalOffset, -VerticalLeadLimit, VerticalLeadLimit)
+
+			local PredictedPosition = AimProfile.AimPosition
+				+ HorizontalOffset
+				+ Vector3.new(0, VerticalOffset, 0)
+			local GroundRayOrigin = CurrentRoot.Position
+				+ Vector3.new(0, AimProfile.BodyHeight * 0.5, 0)
+			local GroundResult = workspace:Raycast(
+				GroundRayOrigin,
+				Vector3.new(0, -(AimProfile.BodyHeight + 8), 0),
+				PlacementRaycastParameters
+			)
+
+			if GroundResult then
+				local MinimumAimY = GroundResult.Position.Y + AimProfile.GroundToAimHeight
+
+				if PredictedPosition.Y < MinimumAimY then
+					PredictedPosition = Vector3.new(PredictedPosition.X, MinimumAimY, PredictedPosition.Z)
+				end
+			end
+
+			return CurrentRoot, CurrentAimPart, AimProfile, PredictedPosition, HorizontalVelocity
 		end
 
-		Character:PivotTo(CFrame.lookAt(AbovePosition, FlatLookPosition))
+		local function ResolveStaffShotCFrame(CurrentRoot, CurrentAimPart, AimProfile, HorizontalVelocity)
+			local FacingDirection = Vector3.new(
+				CurrentRoot.CFrame.LookVector.X,
+				0,
+				CurrentRoot.CFrame.LookVector.Z
+			)
+
+			if FacingDirection.Magnitude < 0.01 then
+				FacingDirection = Vector3.new(
+					OriginalRootCFrame.LookVector.X,
+					0,
+					OriginalRootCFrame.LookVector.Z
+				)
+			end
+
+			FacingDirection = FacingDirection.Magnitude > 0.01
+				and FacingDirection.Unit
+				or Vector3.new(0, 0, -1)
+
+			local PrimaryBackDirection = HorizontalVelocity.Magnitude
+				>= TargetingSettings.StaffShotMovementAlignmentSpeed
+				and -HorizontalVelocity.Unit
+				or -FacingDirection
+			local SideDirection = Vector3.new(
+				-PrimaryBackDirection.Z,
+				0,
+				PrimaryBackDirection.X
+			)
+			local DiagonalWeight = TargetingSettings.StaffShotDiagonalWeight
+			local CandidateDirections = {
+				PrimaryBackDirection,
+				(PrimaryBackDirection + SideDirection * DiagonalWeight).Unit,
+				(PrimaryBackDirection - SideDirection * DiagonalWeight).Unit,
+				SideDirection,
+				-SideDirection,
+				-PrimaryBackDirection
+			}
+			local MuzzleClearance = math.clamp(
+				AimProfile.CoreHorizontalRadius + TargetingSettings.StaffShotMuzzleSurfaceGap,
+				TargetingSettings.StaffShotMinimumMuzzleClearance,
+				TargetingSettings.StaffShotMaximumMuzzleClearance
+			)
+
+			for _, CandidateDirection in ipairs(CandidateDirections) do
+				TargetSurfaceRaycastParameters.FilterDescendantsInstances = { CurrentAimPart }
+				local SurfaceProbeOrigin = CurrentAimPart.Position
+					+ CandidateDirection * TargetingSettings.StaffShotSurfaceProbeDistance
+				local SurfaceResult = workspace:Raycast(
+					SurfaceProbeOrigin,
+					CurrentAimPart.Position - SurfaceProbeOrigin,
+					TargetSurfaceRaycastParameters
+				)
+				local DesiredMuzzlePosition = SurfaceResult
+					and SurfaceResult.Position
+						+ CandidateDirection * TargetingSettings.StaffShotMuzzleSurfaceGap
+					or AimProfile.AimPosition + CandidateDirection * MuzzleClearance
+				local LookDirection = -CandidateDirection
+				local RotationCFrame = CFrame.lookAt(
+					Vector3.zero,
+					LookDirection,
+					Vector3.yAxis
+				)
+				local RotatedMuzzleOffset = RotationCFrame:VectorToWorldSpace(MuzzleOffset)
+				local CandidateRootPosition = DesiredMuzzlePosition - RotatedMuzzleOffset
+				local CandidateCFrame = CFrame.new(CandidateRootPosition) * RotationCFrame.Rotation
+				local MuzzleCorridorResult = workspace:Raycast(
+					AimProfile.AimPosition,
+					DesiredMuzzlePosition - AimProfile.AimPosition,
+					PlacementRaycastParameters
+				)
+				local RootCorridorResult = workspace:Raycast(
+					CurrentRoot.Position,
+					CandidateRootPosition - CurrentRoot.Position,
+					PlacementRaycastParameters
+				)
+				local CandidateMuzzlePosition = CandidateCFrame:PointToWorldSpace(MuzzleOffset)
+
+				if not MuzzleCorridorResult
+					and not RootCorridorResult
+					and HasClearShot(
+						CandidateMuzzlePosition,
+						MurdererCharacter,
+						AimProfile.AimPosition
+					) then
+					return CandidateCFrame
+				end
+			end
+
+			TargetSurfaceRaycastParameters.FilterDescendantsInstances = { CurrentAimPart }
+			local FallbackProbeOrigin = CurrentAimPart.Position
+				+ Vector3.new(0, TargetingSettings.StaffShotSurfaceProbeDistance, 0)
+			local FallbackSurfaceResult = workspace:Raycast(
+				FallbackProbeOrigin,
+				CurrentAimPart.Position - FallbackProbeOrigin,
+				TargetSurfaceRaycastParameters
+			)
+			local FallbackMuzzlePosition = FallbackSurfaceResult
+				and FallbackSurfaceResult.Position
+					+ Vector3.new(0, TargetingSettings.StaffShotMuzzleSurfaceGap, 0)
+				or AimProfile.AimPosition + Vector3.new(0, MuzzleClearance + 0.75, 0)
+			local FallbackRotation = CFrame.lookAt(
+				Vector3.zero,
+				-PrimaryBackDirection,
+				Vector3.yAxis
+			)
+			local FallbackRootPosition = FallbackMuzzlePosition
+				- FallbackRotation:VectorToWorldSpace(MuzzleOffset)
+
+			return CFrame.new(FallbackRootPosition) * FallbackRotation.Rotation
+		end
+
+		local CurrentRoot, CurrentAimPart, AimProfile, _, HorizontalVelocity = ResolveStaffAimPosition()
+		local DesiredRootCFrame = ResolveStaffShotCFrame(
+			CurrentRoot,
+			CurrentAimPart,
+			AimProfile,
+			HorizontalVelocity
+		)
+		Character:PivotTo(DesiredRootCFrame * RootRelativeToPivot:Inverse())
 		Root.AssemblyLinearVelocity = Vector3.zero
 		Root.AssemblyAngularVelocity = Vector3.zero
-		RunService.Heartbeat:Wait()
+		task.wait(TargetingSettings.StaffShotTeleportDelay)
 
-		PredictedPosition = GetPredictedAimPosition(MurdererCharacter, AimPart)
-		AbovePosition = MurdererRoot.Position + Vector3.new(0, TargetingSettings.StaffShotHeight, 0)
-		FlatLookPosition = Vector3.new(PredictedPosition.X, AbovePosition.Y, PredictedPosition.Z)
+		local _, FinalAimPart, _, PredictedPosition = ResolveStaffAimPosition()
+		local ShotOriginCFrame = OriginAttachment.WorldCFrame
+		local ShotOrigin = ShotOriginCFrame.Position
+		local VisibleShotPosition = ResolveVisibleShotPosition(
+			ShotOrigin,
+			MurdererCharacter,
+			FinalAimPart,
+			PredictedPosition
+		)
 
-		if (FlatLookPosition - AbovePosition).Magnitude < 0.01 then
-			FlatLookPosition = AbovePosition + Vector3.new(OriginalRootCFrame.LookVector.X, 0, OriginalRootCFrame.LookVector.Z)
+		if not VisibleShotPosition then
+			error("No clear close-range shot was available")
 		end
 
-		Character:PivotTo(CFrame.lookAt(AbovePosition, FlatLookPosition))
-		Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(PredictedPosition))
-		RunService.Heartbeat:Wait()
+		local ShotVector = VisibleShotPosition - ShotOrigin
+
+		if ShotVector.Magnitude < 0.01 then
+			error("The gun ray started too close to the aim point")
+		end
+
+		local ExtendedShotPosition = ShotOrigin
+			+ ShotVector.Unit * TargetingSettings.StaffShotRayLength
+		Shoot:FireServer(ShotOriginCFrame, CFrame.new(ExtendedShotPosition))
+
+		task.wait(TargetingSettings.StaffShotPostFireHold)
 	end)
 
 	if not PreviewSyncCFrame and Character.Parent and Root.Parent then
@@ -2871,7 +3118,7 @@ local function ShootMurdererPrivilege()
 
 	if Success then
 		LastShotTime = os.clock()
-		SetStatus("Shot sent to " .. Murderer.DisplayName .. " with adaptive prediction")
+		SetStatus("Close-range shot sent to " .. Murderer.DisplayName)
 		Window:Notify({
 			Title = "Shoot Murderer",
 			Content = "Shot sent to " .. Murderer.DisplayName .. " and position restored",
