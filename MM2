@@ -28,19 +28,51 @@ local TargetingSettings = {
 	MaximumVerticalSpeed = 125,
 	VelocitySmoothing = 20,
 	WalkSpeedMultiplier = 1.75,
-	DirectionChangeResponse = 0.78,
-	SpeedChangeResponse = 0.5,
-	ToleranceResponse = 0.68,
-	AccelerationSmoothing = 11,
-	AccelerationWeight = 0.55,
-	MaximumAcceleration = 180,
+	DirectionChangeResponse = 0.84,
+	DirectionChangeDot = 0.4,
+	MinimumDirectionSpeed = 2,
+	SpeedChangeResponse = 0.58,
+	ToleranceResponse = 0.7,
+	AccelerationSmoothing = 14,
+	AccelerationWeight = 0.82,
+	MaximumAcceleration = 170,
+	AccelerationConsistencyResponse = 0.5,
+	AccelerationConsistencyDecay = 0.72,
+	AccelerationConsistencyFloor = 0.15,
+	MinimumAccelerationForConsistency = 12,
 	MotionSampleLifetime = 0.4,
 	MinimumSampleTime = 1 / 240,
-	EvasiveWindow = 0.22,
-	EvasiveScoreDecay = 1.3,
-	EvasiveMeanSmoothing = 0.6,
-	EvasiveBlendStart = 0.35,
-	EvasiveBlendRange = 1.35,
+	EvasiveWindow = 0.27,
+	EvasiveScoreDecay = 1.15,
+	EvasiveMeanSmoothing = 0.58,
+	EvasiveBlendStart = 0.42,
+	EvasiveBlendRange = 1.4,
+	PatternMaximumInterval = 0.24,
+	PatternIntervalSmoothing = 0.5,
+	PatternBlendStart = 0.5,
+	PatternBlendRange = 1.3,
+	PatternReliabilityPower = 1.2,
+	TurnRateSmoothing = 13,
+	MaximumTurnRate = 10,
+	MinimumTurnRate = 0.3,
+	TurnConsistencyResponse = 0.42,
+	TurnConsistencyDecay = 0.7,
+	TurnPredictionStrength = 0.8,
+	TurnAccelerationSmoothing = 8,
+	TurnAccelerationSuppression = 0.1,
+	MaximumTurnAcceleration = 120,
+	TurnReversalDecay = 1,
+	TurnReversalBlendStart = 0.1,
+	TurnReversalBlendRange = 0.7,
+	StoppingMinimumDeceleration = 10,
+	StoppingConsistencyStart = 0.05,
+	StoppingConsistencyRange = 0.25,
+	StoppingPredictionStrength = 1,
+	StoppingHorizonScale = 1.5,
+	UncertaintySafetyInset = 0.05,
+	SmallRadiusSafetyInset = 0.2,
+	SmallRadiusSafetyStart = 0.45,
+	SmallRadiusSafetyEnd = 1,
 	RisingPredictionScale = 0.34,
 	FallingPredictionScale = 0.46,
 	VerticalDeadzone = 5,
@@ -50,6 +82,27 @@ local TargetingSettings = {
 	VerticalMotionLimitScale = 0.6,
 	MinimumVerticalOffsetLimit = 1.5,
 	MaximumVerticalOffsetLimit = 8,
+	JumpRiseThreshold = 10,
+	JumpFallThreshold = -8,
+	MinimumJumpLaunchVelocity = 25,
+	SpamJumpStateLifetime = 2,
+	SpamJumpMaximumInterval = 1.25,
+	MinimumJumpCycleInterval = 0.18,
+	SpamJumpScoreDecay = 0.35,
+	SpamJumpBlendStart = 1.1,
+	SpamJumpBlendRange = 0.45,
+	JumpDwellSmoothing = 0.55,
+	JumpLaunchSmoothing = 0.45,
+	DefaultJumpDwell = 0.025,
+	MaximumJumpDwell = 0.14,
+	SpamGroundPredictionWindow = 0.15,
+	SpamCycleBaseTime = 0.004,
+	SpamCyclePingWeight = 0.55,
+	SpamCycleMinimumTime = 0.018,
+	SpamCycleMaximumTime = 0.12,
+	SpamCyclePredictionStrength = 0.95,
+	SpamAimLowering = 0.06,
+	SpamGroundRayDistance = 64,
 	PingWeight = 0.5,
 	VerticalPingInfluence = 0.05,
 	MaximumPing = 0.12,
@@ -61,6 +114,7 @@ local TargetingSettings = {
 	SwitchBias = 4,
 	AimInsetRatio = 0.16,
 	MinimumAimInset = 0.08,
+	VisibleAimProbeRatio = 0.28,
 	ClickDebounce = 0.08,
 	StaffShotHeight = 8,
 	AutoGrabInterval = 0.12,
@@ -77,6 +131,12 @@ local TargetingSettings = {
 		"UpperTorso",
 		"LowerTorso",
 		"Torso"
+	},
+	VisibleFallbackParts = {
+		"UpperTorso",
+		"LowerTorso",
+		"Torso",
+		"Head"
 	}
 }
 local LastShotTime = 0
@@ -242,6 +302,7 @@ local CachedPlayers = Players:GetPlayers()
 local CharacterPartCache = setmetatable({}, { __mode = "k" })
 local OriginalManualActivation = setmetatable({}, { __mode = "k" })
 local PredictionVelocitySamples = setmetatable({}, { __mode = "k" })
+local JumpMotionSamples = setmetatable({}, { __mode = "k" })
 local RoleHighlights = {}
 local GunDropHighlight
 local PlayerRoles = {}
@@ -421,6 +482,9 @@ local function HasNamedTool(Container, ToolName)
 end
 
 local function ClearCharacterPartCache(Character)
+	PredictionVelocitySamples[Character] = nil
+	JumpMotionSamples[Character] = nil
+
 	local Entry = CharacterPartCache[Character]
 	if not Entry then
 		return
@@ -793,6 +857,117 @@ local function GetPingPredictionOffset()
 	return math.clamp((SmoothedNetworkPing or 0) * TargetingSettings.PingWeight, 0, TargetingSettings.MaximumPing)
 end
 
+local function UpdateJumpMotionState(TargetCharacter, Airborne, VerticalVelocity)
+	local CurrentTime = os.clock()
+	local Sample = JumpMotionSamples[TargetCharacter]
+
+	if not Sample or CurrentTime - Sample.Time > TargetingSettings.SpamJumpStateLifetime then
+		local InitialTakeoffTime = Airborne
+			and VerticalVelocity >= TargetingSettings.JumpRiseThreshold
+			and CurrentTime
+			or nil
+		local InitialScore = InitialTakeoffTime and 1 or 0
+		local InitialState = {
+			Time = CurrentTime,
+			Airborne = Airborne,
+			VerticalVelocity = VerticalVelocity,
+			WasFalling = VerticalVelocity <= TargetingSettings.JumpFallThreshold,
+			LastTakeoffTime = InitialTakeoffTime,
+			LastLandingTime = nil,
+			ChainScore = InitialScore,
+			EstimatedDwell = TargetingSettings.DefaultJumpDwell,
+			LaunchVelocity = math.max(VerticalVelocity, TargetingSettings.MinimumJumpLaunchVelocity)
+		}
+		JumpMotionSamples[TargetCharacter] = InitialState
+		return InitialState, 0
+	end
+
+	local DeltaTime = math.clamp(CurrentTime - Sample.Time, 0, 0.2)
+	local ChainScore = (Sample.ChainScore or 0)
+		* math.exp(-TargetingSettings.SpamJumpScoreDecay * DeltaTime)
+	local WasFalling = Sample.WasFalling or false
+	local LastTakeoffTime = Sample.LastTakeoffTime
+	local LastLandingTime = Sample.LastLandingTime
+	local EstimatedDwell = Sample.EstimatedDwell or TargetingSettings.DefaultJumpDwell
+	local LaunchVelocity = Sample.LaunchVelocity or TargetingSettings.MinimumJumpLaunchVelocity
+	local JustLanded = not Airborne and Sample.Airborne
+
+	if JustLanded then
+		LastLandingTime = CurrentTime
+		WasFalling = true
+	end
+
+	local NewRise = Airborne
+		and VerticalVelocity >= TargetingSettings.JumpRiseThreshold
+		and (
+			not Sample.Airborne
+			or Sample.VerticalVelocity < TargetingSettings.JumpRiseThreshold
+			or WasFalling
+		)
+
+	if NewRise
+		and (
+			LastTakeoffTime == nil
+			or CurrentTime - LastTakeoffTime >= TargetingSettings.MinimumJumpCycleInterval
+		) then
+		local RepeatedJump = LastTakeoffTime ~= nil
+			and CurrentTime - LastTakeoffTime <= TargetingSettings.SpamJumpMaximumInterval
+			and WasFalling
+
+		ChainScore = RepeatedJump and ChainScore + 1 or 1
+
+		if LastLandingTime ~= nil then
+			local ObservedDwell = CurrentTime - LastLandingTime
+
+			if ObservedDwell <= TargetingSettings.MaximumJumpDwell then
+				EstimatedDwell = EstimatedDwell
+					+ (ObservedDwell - EstimatedDwell) * TargetingSettings.JumpDwellSmoothing
+			end
+		end
+
+		local ObservedLaunchVelocity = math.max(
+			VerticalVelocity,
+			TargetingSettings.MinimumJumpLaunchVelocity
+		)
+		LaunchVelocity = LaunchVelocity
+			+ (ObservedLaunchVelocity - LaunchVelocity) * TargetingSettings.JumpLaunchSmoothing
+		LastTakeoffTime = CurrentTime
+		WasFalling = false
+	elseif Airborne and VerticalVelocity <= TargetingSettings.JumpFallThreshold then
+		WasFalling = true
+	end
+
+	if Airborne and VerticalVelocity > LaunchVelocity then
+		LaunchVelocity = LaunchVelocity
+			+ (VerticalVelocity - LaunchVelocity) * TargetingSettings.JumpLaunchSmoothing
+	end
+
+	local State = {
+		Time = CurrentTime,
+		Airborne = Airborne,
+		VerticalVelocity = VerticalVelocity,
+		WasFalling = WasFalling,
+		LastTakeoffTime = LastTakeoffTime,
+		LastLandingTime = LastLandingTime,
+		ChainScore = math.clamp(ChainScore, 0, 4),
+		EstimatedDwell = math.clamp(EstimatedDwell, 0, TargetingSettings.MaximumJumpDwell),
+		LaunchVelocity = math.clamp(
+			LaunchVelocity,
+			TargetingSettings.MinimumJumpLaunchVelocity,
+			TargetingSettings.MaximumVerticalSpeed
+		)
+	}
+	JumpMotionSamples[TargetCharacter] = State
+
+	local SpamJumpBlend = math.clamp(
+		(State.ChainScore - TargetingSettings.SpamJumpBlendStart)
+			/ TargetingSettings.SpamJumpBlendRange,
+		0,
+		1
+	)
+	return State, SpamJumpBlend
+end
+
 local function GetFilteredPredictionMotion(TargetCharacter, Root, Humanoid, TargetTolerance, PredictionHorizon)
 	local CurrentTime = os.clock()
 	local RawVelocity = Root.AssemblyLinearVelocity
@@ -816,22 +991,42 @@ local function GetFilteredPredictionMotion(TargetCharacter, Root, Humanoid, Targ
 	local ReversalVelocity = RawHorizontalVelocity
 	local ReversalScore = 0
 	local LastDirectionChangeTime
+	local PatternInterval
+	local PatternReliability = 0
+	local AccelerationConsistency = 0
+	local LatestRawAcceleration = Vector3.zero
+	local FilteredTurnRate = 0
+	local TurnConsistency = 0
+	local LatestRawTurnRate = 0
+	local FilteredTurnAcceleration = 0
+	local TurnReversalScore = 0
 
 	if Sample and CurrentTime - Sample.Time <= TargetingSettings.MotionSampleLifetime then
 		local DeltaTime = math.clamp(CurrentTime - Sample.Time, 0, 0.1)
 		local Difference = RawHorizontalVelocity - Sample.Velocity
 		local DirectionChanged = false
-		local DirectionDot = 1
+		local DirectionReference = Sample.Velocity
 
-		if RawHorizontalVelocity.Magnitude > 1 and Sample.Velocity.Magnitude > 1 then
-			DirectionDot = RawHorizontalVelocity.Unit:Dot(Sample.Velocity.Unit)
-			DirectionChanged = DirectionDot < 0.35
+		if RawHorizontalVelocity.Magnitude > TargetingSettings.MinimumDirectionSpeed
+			and DirectionReference.Magnitude > TargetingSettings.MinimumDirectionSpeed then
+			DirectionChanged = RawHorizontalVelocity.Unit:Dot(DirectionReference.Unit)
+				< TargetingSettings.DirectionChangeDot
 		end
 
 		ReversalVelocity = Sample.ReversalVelocity or Sample.Velocity
 		ReversalScore = (Sample.ReversalScore or 0)
 			* math.exp(-TargetingSettings.EvasiveScoreDecay * DeltaTime)
 		LastDirectionChangeTime = Sample.LastDirectionChangeTime
+		PatternInterval = Sample.PatternInterval
+		PatternReliability = Sample.PatternReliability or 0
+		AccelerationConsistency = Sample.AccelerationConsistency or 0
+		LatestRawAcceleration = Sample.RawAcceleration or Vector3.zero
+		FilteredTurnRate = Sample.TurnRate or 0
+		TurnConsistency = Sample.TurnConsistency or 0
+		LatestRawTurnRate = Sample.RawTurnRate or 0
+		FilteredTurnAcceleration = Sample.TurnAcceleration or 0
+		TurnReversalScore = (Sample.TurnReversalScore or 0)
+			* math.exp(-TargetingSettings.TurnReversalDecay * DeltaTime)
 
 		if DeltaTime >= TargetingSettings.MinimumSampleTime then
 			local Alpha = 1 - math.exp(-TargetingSettings.VelocitySmoothing * DeltaTime)
@@ -851,15 +1046,89 @@ local function GetFilteredPredictionMotion(TargetCharacter, Root, Humanoid, Targ
 			FilteredVelocity = Sample.Velocity:Lerp(RawHorizontalVelocity, Alpha)
 			MotionUncertainty = (RawHorizontalVelocity - FilteredVelocity).Magnitude
 
-			if not DirectionChanged then
-				local RawAcceleration = (FilteredVelocity - Sample.Velocity) / DeltaTime
+			if not DirectionChanged
+				and FilteredVelocity.Magnitude > TargetingSettings.MinimumDirectionSpeed
+				and Sample.Velocity.Magnitude > TargetingSettings.MinimumDirectionSpeed then
+				local Cross = Sample.Velocity.X * FilteredVelocity.Z
+					- Sample.Velocity.Z * FilteredVelocity.X
+				local AngleChange = math.atan2(Cross, Sample.Velocity:Dot(FilteredVelocity))
+				LatestRawTurnRate = math.clamp(
+					AngleChange / DeltaTime,
+					-TargetingSettings.MaximumTurnRate,
+					TargetingSettings.MaximumTurnRate
+				)
+				local TurnAlpha = 1 - math.exp(-TargetingSettings.TurnRateSmoothing * DeltaTime)
+				FilteredTurnRate = FilteredTurnRate
+					+ (LatestRawTurnRate - FilteredTurnRate) * TurnAlpha
+				local PreviousRawTurnRate = Sample.RawTurnRate or 0
 
-				if RawAcceleration.Magnitude > TargetingSettings.MaximumAcceleration then
-					RawAcceleration = RawAcceleration.Unit * TargetingSettings.MaximumAcceleration
+				if math.abs(LatestRawTurnRate) >= TargetingSettings.MinimumTurnRate
+					and math.abs(PreviousRawTurnRate) >= TargetingSettings.MinimumTurnRate
+					and math.sign(LatestRawTurnRate) ~= math.sign(PreviousRawTurnRate) then
+					TurnReversalScore = math.clamp(TurnReversalScore + 1, 0, 3)
+				end
+
+				local RawTurnAcceleration = math.clamp(
+					(LatestRawTurnRate - PreviousRawTurnRate) / DeltaTime,
+					-TargetingSettings.MaximumTurnAcceleration,
+					TargetingSettings.MaximumTurnAcceleration
+				)
+				local TurnAccelerationAlpha = 1
+					- math.exp(-TargetingSettings.TurnAccelerationSmoothing * DeltaTime)
+				FilteredTurnAcceleration = FilteredTurnAcceleration
+					+ (RawTurnAcceleration - FilteredTurnAcceleration) * TurnAccelerationAlpha
+
+				local TurnConsistencyTarget = 0
+				if math.abs(LatestRawTurnRate) >= TargetingSettings.MinimumTurnRate
+					and math.abs(PreviousRawTurnRate) >= TargetingSettings.MinimumTurnRate
+					and math.sign(LatestRawTurnRate) == math.sign(PreviousRawTurnRate) then
+					TurnConsistencyTarget = math.clamp(
+						1 - math.abs(LatestRawTurnRate - PreviousRawTurnRate)
+							/ math.max(math.abs(PreviousRawTurnRate), TargetingSettings.MinimumTurnRate),
+						0,
+						1
+					)
+				end
+
+				if TurnConsistencyTarget > TurnConsistency then
+					TurnConsistency = TurnConsistency
+						+ (TurnConsistencyTarget - TurnConsistency)
+							* TargetingSettings.TurnConsistencyResponse
+				else
+					TurnConsistency = TurnConsistency * TargetingSettings.TurnConsistencyDecay
+				end
+			end
+
+			if not DirectionChanged then
+				LatestRawAcceleration = (FilteredVelocity - Sample.Velocity) / DeltaTime
+
+				if LatestRawAcceleration.Magnitude > TargetingSettings.MaximumAcceleration then
+					LatestRawAcceleration = LatestRawAcceleration.Unit * TargetingSettings.MaximumAcceleration
 				end
 
 				local AccelerationAlpha = 1 - math.exp(-TargetingSettings.AccelerationSmoothing * DeltaTime)
-				FilteredAcceleration = Sample.Acceleration:Lerp(RawAcceleration, AccelerationAlpha)
+				FilteredAcceleration = Sample.Acceleration:Lerp(LatestRawAcceleration, AccelerationAlpha)
+				local PreviousRawAcceleration = Sample.RawAcceleration or Vector3.zero
+				local AccelerationConsistencyTarget = 0
+
+				if LatestRawAcceleration.Magnitude >= TargetingSettings.MinimumAccelerationForConsistency
+					and PreviousRawAcceleration.Magnitude
+						>= TargetingSettings.MinimumAccelerationForConsistency then
+					AccelerationConsistencyTarget = math.clamp(
+						(LatestRawAcceleration.Unit:Dot(PreviousRawAcceleration.Unit) - 0.05) / 0.95,
+						0,
+						1
+					)
+				end
+
+				if AccelerationConsistencyTarget > AccelerationConsistency then
+					AccelerationConsistency = AccelerationConsistency
+						+ (AccelerationConsistencyTarget - AccelerationConsistency)
+							* TargetingSettings.AccelerationConsistencyResponse
+				else
+					AccelerationConsistency = AccelerationConsistency
+						* TargetingSettings.AccelerationConsistencyDecay
+				end
 			end
 		else
 			if DirectionChanged then
@@ -873,6 +1142,7 @@ local function GetFilteredPredictionMotion(TargetCharacter, Root, Humanoid, Targ
 		end
 
 		if DirectionChanged then
+			TurnConsistency = 0
 			local PreviousRawVelocity = Sample.RawVelocity or Sample.Velocity
 			local ReversalMean = (PreviousRawVelocity + RawHorizontalVelocity) * 0.5
 			local RepeatedReversal = LastDirectionChangeTime ~= nil
@@ -884,6 +1154,25 @@ local function GetFilteredPredictionMotion(TargetCharacter, Root, Humanoid, Targ
 			else
 				ReversalVelocity = ReversalMean
 				ReversalScore = ReversalScore + 0.25
+			end
+
+			if LastDirectionChangeTime ~= nil then
+				local NewInterval = CurrentTime - LastDirectionChangeTime
+				if NewInterval <= TargetingSettings.PatternMaximumInterval then
+					if PatternInterval ~= nil then
+						local RelativeError = math.abs(NewInterval - PatternInterval)
+							/ math.max(PatternInterval, 0.02)
+						local NewReliability = math.clamp(1 - RelativeError * 1.8, 0, 1)
+						PatternReliability = PatternReliability
+							+ (NewReliability - PatternReliability) * 0.45
+						PatternInterval = PatternInterval
+							+ (NewInterval - PatternInterval)
+								* TargetingSettings.PatternIntervalSmoothing
+					else
+						PatternInterval = NewInterval
+						PatternReliability = 0.35
+					end
+				end
 			end
 
 			LastDirectionChangeTime = CurrentTime
@@ -904,13 +1193,202 @@ local function GetFilteredPredictionMotion(TargetCharacter, Root, Humanoid, Targ
 		Velocity = FilteredVelocity,
 		Acceleration = FilteredAcceleration,
 		RawVelocity = RawHorizontalVelocity,
+		RawAcceleration = LatestRawAcceleration,
+		AccelerationConsistency = AccelerationConsistency,
 		ReversalVelocity = ReversalVelocity,
 		ReversalScore = ReversalScore,
 		LastDirectionChangeTime = LastDirectionChangeTime,
+		PatternInterval = PatternInterval,
+		PatternReliability = PatternReliability,
+		TurnRate = FilteredTurnRate,
+		TurnConsistency = TurnConsistency,
+		RawTurnRate = LatestRawTurnRate,
+		TurnAcceleration = FilteredTurnAcceleration,
+		TurnReversalScore = TurnReversalScore,
 		Time = CurrentTime
 	}
 
-	return PredictionVelocity, RawVelocity.Y, FilteredAcceleration, HorizontalLimit, MotionUncertainty
+	local AccelerationTime = math.min(PredictionHorizon, 0.25)
+	local ProjectedUncertainty = MotionUncertainty * PredictionHorizon
+	local GeometryConfidence = math.clamp(
+		TargetTolerance / math.max(TargetTolerance + ProjectedUncertainty, 0.01),
+		0.2,
+		1
+	)
+	local AccelerationConfidence = TargetingSettings.AccelerationConsistencyFloor
+		+ (1 - TargetingSettings.AccelerationConsistencyFloor)
+			* math.clamp(AccelerationConsistency, 0, 1)
+	local AccelerationOffset = Vector3.zero
+
+	if PredictionVelocity.Magnitude >= 1 then
+		AccelerationOffset = FilteredAcceleration
+			* (
+				0.5
+					* AccelerationTime
+					* AccelerationTime
+					* TargetingSettings.AccelerationWeight
+					* GeometryConfidence
+					* AccelerationConfidence
+			)
+	end
+
+	local VelocityOffset = PredictionVelocity * PredictionHorizon
+	local HorizontalOffset = VelocityOffset + AccelerationOffset
+
+	if VelocityOffset.Magnitude > 0 and HorizontalOffset:Dot(VelocityOffset) < 0 then
+		HorizontalOffset = Vector3.zero
+	elseif VelocityOffset.Magnitude == 0 then
+		HorizontalOffset = Vector3.zero
+	end
+
+	if math.abs(FilteredTurnRate) >= TargetingSettings.MinimumTurnRate
+		and TurnConsistency > 0
+		and PredictionVelocity.Magnitude >= 1 then
+		local TurnAngle = FilteredTurnRate * PredictionHorizon
+		local Sine = math.sin(TurnAngle)
+		local Cosine = math.cos(TurnAngle)
+		local ArcOffset = Vector3.new(
+			(PredictionVelocity.X * Sine - PredictionVelocity.Z * (1 - Cosine)) / FilteredTurnRate,
+			0,
+			(PredictionVelocity.X * (1 - Cosine) + PredictionVelocity.Z * Sine) / FilteredTurnRate
+		)
+		local ForwardDirection = PredictionVelocity.Unit
+		local TangentialAcceleration = ForwardDirection
+			* FilteredAcceleration:Dot(ForwardDirection)
+		local ArcAccelerationOffset = TangentialAcceleration
+			* (0.5 * AccelerationTime * AccelerationTime * TargetingSettings.AccelerationWeight)
+		local TurnRateConfidence = math.clamp(
+			(math.abs(FilteredTurnRate) - TargetingSettings.MinimumTurnRate)
+				/ math.max(TargetingSettings.MinimumTurnRate * 2, 0.01),
+			0,
+			1
+		)
+		local EvasiveSuppression = 1 - math.clamp(ReversalScore / 1.5, 0, 1)
+		local TurnAccelerationSuppression = math.clamp(
+			1 - math.abs(FilteredTurnAcceleration)
+				* PredictionHorizon
+				/ math.max(math.abs(FilteredTurnRate), TargetingSettings.MinimumTurnRate)
+				* TargetingSettings.TurnAccelerationSuppression,
+			0,
+			1
+		)
+		local TurnReversalSuppression = 1 - math.clamp(
+			(TurnReversalScore - TargetingSettings.TurnReversalBlendStart)
+				/ TargetingSettings.TurnReversalBlendRange,
+			0,
+			1
+		)
+		local TurnBlend = math.clamp(
+			TurnConsistency
+				* TargetingSettings.TurnPredictionStrength
+				* TurnRateConfidence
+				* EvasiveSuppression
+				* TurnAccelerationSuppression
+				* TurnReversalSuppression,
+			0,
+			1
+		)
+		HorizontalOffset = HorizontalOffset:Lerp(ArcOffset + ArcAccelerationOffset, TurnBlend)
+	end
+
+	if PredictionVelocity.Magnitude >= 1 then
+		local ForwardDirection = PredictionVelocity.Unit
+		local TangentialDeceleration = FilteredAcceleration:Dot(ForwardDirection)
+
+		if TangentialDeceleration <= -TargetingSettings.StoppingMinimumDeceleration then
+			local TimeToStop = PredictionVelocity.Magnitude / -TangentialDeceleration
+
+			if TimeToStop <= PredictionHorizon * TargetingSettings.StoppingHorizonScale then
+				local StoppingTime = math.min(TimeToStop, PredictionHorizon)
+				local StoppingDistance = math.max(
+					0,
+					PredictionVelocity.Magnitude * StoppingTime
+						+ 0.5 * TangentialDeceleration * StoppingTime * StoppingTime
+				)
+				local CurrentForwardDistance = HorizontalOffset:Dot(ForwardDirection)
+				local PerpendicularOffset = HorizontalOffset
+					- ForwardDirection * CurrentForwardDistance
+				local StoppingOffset = PerpendicularOffset
+					+ ForwardDirection * StoppingDistance
+				local StoppingBlend = math.clamp(
+					(AccelerationConsistency - TargetingSettings.StoppingConsistencyStart)
+						/ TargetingSettings.StoppingConsistencyRange,
+					0,
+					1
+				) * TargetingSettings.StoppingPredictionStrength
+
+				HorizontalOffset = HorizontalOffset:Lerp(StoppingOffset, StoppingBlend)
+			end
+		end
+	end
+
+	if PatternInterval ~= nil
+		and LastDirectionChangeTime ~= nil
+		and PatternInterval >= 0.035
+		and CurrentTime - LastDirectionChangeTime <= PatternInterval * 1.6 then
+		local TimeLeft = PredictionHorizon
+		local TimeSinceChange = CurrentTime - LastDirectionChangeTime
+		local SegmentTime = math.min(TimeLeft, math.max(0, PatternInterval - TimeSinceChange))
+		local SignedTime = SegmentTime
+		local Sign = -1
+		TimeLeft = TimeLeft - SegmentTime
+
+		while TimeLeft > 0.000001 do
+			SegmentTime = math.min(TimeLeft, PatternInterval)
+			SignedTime = SignedTime + SegmentTime * Sign
+			Sign = -Sign
+			TimeLeft = TimeLeft - SegmentTime
+		end
+
+		local OscillationVelocity = FilteredVelocity - ReversalVelocity
+		local PatternOffset = ReversalVelocity * PredictionHorizon
+			+ OscillationVelocity * SignedTime
+		local PatternBlend = math.clamp(
+			(ReversalScore - TargetingSettings.PatternBlendStart) / TargetingSettings.PatternBlendRange,
+			0,
+			1
+		) * math.clamp(PatternReliability, 0, 1) ^ TargetingSettings.PatternReliabilityPower
+		HorizontalOffset = HorizontalOffset:Lerp(PatternOffset, PatternBlend)
+	end
+
+	if HorizontalOffset.Magnitude > 0 then
+		local UncertaintyRatio = math.clamp(
+			ProjectedUncertainty / math.max(TargetTolerance, 0.05),
+			0,
+			1
+		)
+		local SmallRadiusBlend = 1 - math.clamp(
+			(TargetTolerance - TargetingSettings.SmallRadiusSafetyStart)
+				/ math.max(
+					TargetingSettings.SmallRadiusSafetyEnd
+						- TargetingSettings.SmallRadiusSafetyStart,
+					0.01
+				),
+			0,
+			1
+		)
+		local ActiveSafetyInset = TargetingSettings.UncertaintySafetyInset
+			+ (TargetingSettings.SmallRadiusSafetyInset - TargetingSettings.UncertaintySafetyInset)
+				* SmallRadiusBlend
+		local SafetyInset = math.min(
+			TargetTolerance * ActiveSafetyInset * UncertaintyRatio,
+			HorizontalOffset.Magnitude * 0.35
+		)
+		HorizontalOffset = HorizontalOffset - HorizontalOffset.Unit * SafetyInset
+	end
+
+	local MaximumHorizontalOffset = HorizontalLimit * PredictionHorizon
+		+ 0.5
+			* TargetingSettings.MaximumAcceleration
+			* AccelerationTime
+			* AccelerationTime
+			* TargetingSettings.AccelerationWeight
+
+	if HorizontalOffset.Magnitude > MaximumHorizontalOffset and MaximumHorizontalOffset > 0 then
+		HorizontalOffset = HorizontalOffset.Unit * MaximumHorizontalOffset
+	end
+
+	return HorizontalOffset, PredictionVelocity, RawVelocity.Y
 end
 
 local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverride)
@@ -950,7 +1428,7 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 			and State ~= Enum.HumanoidStateType.Seated
 			and State ~= Enum.HumanoidStateType.Swimming
 		)
-	local HorizontalVelocity, RawVerticalVelocity, HorizontalAcceleration, HorizontalLimit, MotionUncertainty =
+	local HorizontalOffset, HorizontalVelocity, RawVerticalVelocity =
 		GetFilteredPredictionMotion(
 			TargetCharacter,
 			Root,
@@ -961,6 +1439,20 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 	local VerticalVelocity = Airborne
 		and math.clamp(RawVerticalVelocity, -TargetingSettings.MaximumVerticalSpeed, TargetingSettings.MaximumVerticalSpeed)
 		or 0
+	local JumpState, SpamJumpBlend = UpdateJumpMotionState(
+		TargetCharacter,
+		Airborne,
+		VerticalVelocity
+	)
+	local TimeSinceLanding = JumpState.LastLandingTime ~= nil
+		and os.clock() - JumpState.LastLandingTime
+		or math.huge
+	local SpamJumpPredictionActive = RequestedPrediction > 0
+		and SpamJumpBlend > 0
+		and (
+			Airborne
+			or TimeSinceLanding <= TargetingSettings.SpamGroundPredictionWindow
+		)
 	local ActiveVerticalDeadzone = TargetingSettings.VerticalDeadzone
 		* math.clamp(AimProfile.AvatarScale, 0.6, 1.5)
 	local VerticalOffset = 0
@@ -1003,38 +1495,6 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		)
 	end
 
-	local VelocityOffset = HorizontalVelocity * ActivePrediction
-	local ProjectedUncertainty = MotionUncertainty * ActivePrediction
-	local GeometryConfidence = math.clamp(
-		AimProfile.CoreHorizontalRadius
-			/ math.max(AimProfile.CoreHorizontalRadius + ProjectedUncertainty, 0.01),
-		0.2,
-		1
-	)
-	local AccelerationTime = math.min(ActivePrediction, 0.25)
-	local AccelerationOffset = Vector3.zero
-
-	if HorizontalVelocity.Magnitude >= 1 then
-		AccelerationOffset = HorizontalAcceleration
-			* (0.5 * AccelerationTime * AccelerationTime * TargetingSettings.AccelerationWeight * GeometryConfidence)
-	end
-
-	local HorizontalOffset = VelocityOffset + AccelerationOffset
-
-	if VelocityOffset.Magnitude > 0 and HorizontalOffset:Dot(VelocityOffset) < 0 then
-		HorizontalOffset = Vector3.zero
-	elseif VelocityOffset.Magnitude == 0 then
-		HorizontalOffset = Vector3.zero
-	end
-
-	local MaximumHorizontalOffset = HorizontalLimit * ActivePrediction
-		+ 0.5 * TargetingSettings.MaximumAcceleration * AccelerationTime * AccelerationTime
-			* TargetingSettings.AccelerationWeight
-
-	if HorizontalOffset.Magnitude > MaximumHorizontalOffset and MaximumHorizontalOffset > 0 then
-		HorizontalOffset = HorizontalOffset.Unit * MaximumHorizontalOffset
-	end
-
 	local LocalCharacter = LocalPlayer.Character
 	local LocalRoot = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
 	local ClosingSpeed = 0
@@ -1068,7 +1528,10 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		+ HorizontalOffset
 		+ Vector3.new(0, VerticalOffset - AirborneAimLowering, 0)
 
-	if Airborne or VerticalOffset < 0 or ClosingSpeed > TargetingSettings.ClosingSpeedThreshold then
+	if Airborne
+		or SpamJumpPredictionActive
+		or VerticalOffset < 0
+		or ClosingSpeed > TargetingSettings.ClosingSpeedThreshold then
 		PredictionGroundParameters.FilterDescendantsInstances = LocalCharacter
 			and { TargetCharacter, LocalCharacter }
 			or { TargetCharacter }
@@ -1080,7 +1543,8 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		local RayOrigin = Vector3.new(PredictedPosition.X, RayOriginY, PredictedPosition.Z)
 		local RayDistance = math.max(
 			12,
-			RayOriginY - PredictedPosition.Y + AimProfile.BodyHeight + math.abs(VerticalOffset) + 4
+			RayOriginY - PredictedPosition.Y + AimProfile.BodyHeight + math.abs(VerticalOffset) + 4,
+			SpamJumpPredictionActive and TargetingSettings.SpamGroundRayDistance or 0
 		)
 		local GroundResult = workspace:Raycast(
 			RayOrigin,
@@ -1091,6 +1555,71 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		if GroundResult then
 			local MinimumAimY = GroundResult.Position.Y + AimProfile.GroundToAimHeight
 
+			if SpamJumpPredictionActive then
+				local Gravity = math.max(workspace.Gravity, 0.01)
+				local SpamPredictionTime = math.clamp(
+					TargetingSettings.SpamCycleBaseTime
+						+ (SmoothedNetworkPing or 0) * TargetingSettings.SpamCyclePingWeight,
+					TargetingSettings.SpamCycleMinimumTime,
+					TargetingSettings.SpamCycleMaximumTime
+				)
+				local TimeToLanding = 0
+
+				if Airborne then
+					local HeightAboveGround = math.max(
+						AimProfile.AimPosition.Y - MinimumAimY,
+						0
+					)
+					TimeToLanding = (
+						VerticalVelocity
+							+ math.sqrt(
+								VerticalVelocity * VerticalVelocity
+									+ 2 * Gravity * HeightAboveGround
+							)
+					) / Gravity
+				end
+
+				local SpamPredictedY
+
+				if Airborne and SpamPredictionTime <= TimeToLanding then
+					SpamPredictedY = AimProfile.AimPosition.Y
+						+ VerticalVelocity * SpamPredictionTime
+						- 0.5 * Gravity * SpamPredictionTime * SpamPredictionTime
+				else
+					local RemainingDwell = Airborne
+						and JumpState.EstimatedDwell
+						or math.max(JumpState.EstimatedDwell - TimeSinceLanding, 0)
+					local TimeAfterTakeoff = math.max(
+						SpamPredictionTime - TimeToLanding - RemainingDwell,
+						0
+					)
+
+					if TimeAfterTakeoff > 0 then
+						SpamPredictedY = MinimumAimY
+							+ JumpState.LaunchVelocity * TimeAfterTakeoff
+							- 0.5 * Gravity * TimeAfterTakeoff * TimeAfterTakeoff
+					else
+						SpamPredictedY = MinimumAimY
+					end
+				end
+
+				SpamPredictedY = math.max(
+					SpamPredictedY - TargetingSettings.SpamAimLowering * AimProfile.AvatarScale,
+					MinimumAimY
+				)
+				local ActiveSpamBlend = math.clamp(
+					SpamJumpBlend * TargetingSettings.SpamCyclePredictionStrength,
+					0,
+					1
+				)
+				PredictedPosition = Vector3.new(
+					PredictedPosition.X,
+					PredictedPosition.Y
+						+ (SpamPredictedY - PredictedPosition.Y) * ActiveSpamBlend,
+					PredictedPosition.Z
+				)
+			end
+
 			if PredictedPosition.Y < MinimumAimY then
 				PredictedPosition = Vector3.new(PredictedPosition.X, MinimumAimY, PredictedPosition.Z)
 			end
@@ -1098,6 +1627,51 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 	end
 
 	return PredictedPosition
+end
+
+local function ResolveVisibleShotPosition(OriginPosition, TargetCharacter, AimPart, PredictedPosition)
+	if HasClearShot(OriginPosition, TargetCharacter, PredictedPosition) then
+		return PredictedPosition
+	end
+
+	local Root = TargetCharacter:FindFirstChild("HumanoidRootPart")
+	if not Root then
+		return nil
+	end
+
+	local AimProfile = GetAvatarAimProfile(TargetCharacter, Root, AimPart)
+	local MotionOffset = PredictedPosition - AimProfile.AimPosition
+	local SeenParts = {}
+
+	for _, PartName in ipairs(TargetingSettings.VisibleFallbackParts) do
+		local Part = TargetCharacter:FindFirstChild(PartName)
+
+		if Part and Part:IsA("BasePart") and not SeenParts[Part] then
+			SeenParts[Part] = true
+			local ProbeRatio = TargetingSettings.VisibleAimProbeRatio
+			local Center = Part.Position + MotionOffset
+			local RightOffset = Part.CFrame.RightVector * Part.Size.X * ProbeRatio
+			local UpOffset = Part.CFrame.UpVector * Part.Size.Y * ProbeRatio
+			local DepthOffset = Part.CFrame.LookVector * Part.Size.Z * ProbeRatio
+			local ProbePositions = {
+				Center,
+				Center + UpOffset,
+				Center - UpOffset,
+				Center + RightOffset,
+				Center - RightOffset,
+				Center + DepthOffset,
+				Center - DepthOffset
+			}
+
+			for _, ProbePosition in ipairs(ProbePositions) do
+				if HasClearShot(OriginPosition, TargetCharacter, ProbePosition) then
+					return ProbePosition
+				end
+			end
+		end
+	end
+
+	return nil
 end
 
 local function GetCharacterScreenDistance(Character, PointerPosition)
@@ -1170,7 +1744,7 @@ local function FindTargetNearPointer(PointerPosition, OriginPosition)
 				if ScreenDistance and ScreenDistance <= TargetRadius then
 					local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
 
-					if HasClearShot(OriginPosition, Character, PredictedPosition) then
+					if ResolveVisibleShotPosition(OriginPosition, Character, AimPart, PredictedPosition) then
 						local SelectionScore = ScreenDistance + CenterDistance * TargetingSettings.CenterWeight
 
 						if Player == CurrentTargetPlayer then
@@ -2093,12 +2667,18 @@ local function FireResolvedTarget(Shoot, OriginAttachment, TargetPlayer, AimPart
 	end
 
 	local PredictedPosition = GetPredictedAimPosition(TargetCharacter, AimPart)
-	if not HasClearShot(OriginAttachment.WorldPosition, TargetCharacter, PredictedPosition) then
+	local VisibleShotPosition = ResolveVisibleShotPosition(
+		OriginAttachment.WorldPosition,
+		TargetCharacter,
+		AimPart,
+		PredictedPosition
+	)
+	if not VisibleShotPosition then
 		return false
 	end
 
 	LastShotTime = CurrentTime
-	Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(PredictedPosition))
+	Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(VisibleShotPosition))
 	SetStatus("Shot sent to " .. TargetPlayer.DisplayName)
 	return true
 end
