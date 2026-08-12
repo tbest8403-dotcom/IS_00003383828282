@@ -41,12 +41,15 @@ local TargetingSettings = {
 	EvasiveMeanSmoothing = 0.6,
 	EvasiveBlendStart = 0.35,
 	EvasiveBlendRange = 1.35,
-	VerticalMultiplier = 0.62,
-	RisingMultiplier = 0.22,
-	FallingMultiplier = 0.8,
+	RisingPredictionScale = 0.34,
+	FallingPredictionScale = 0.46,
 	VerticalDeadzone = 5,
 	VerticalGravityMultiplier = 0.55,
-	MaximumRisingOffset = 1.1,
+	RisingAimLowering = 0.2,
+	FallingAimLowering = 0.3,
+	VerticalMotionLimitScale = 0.6,
+	MinimumVerticalOffsetLimit = 1.5,
+	MaximumVerticalOffsetLimit = 8,
 	PingWeight = 0.5,
 	VerticalPingInfluence = 0.05,
 	MaximumPing = 0.12,
@@ -961,32 +964,39 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 	local ActiveVerticalDeadzone = TargetingSettings.VerticalDeadzone
 		* math.clamp(AimProfile.AvatarScale, 0.6, 1.5)
 	local VerticalOffset = 0
+	local VerticalPhaseBlend = math.clamp(
+		(VerticalVelocity + ActiveVerticalDeadzone) / (2 * ActiveVerticalDeadzone),
+		0,
+		1
+	)
 
-	if Airborne and math.abs(VerticalVelocity) > ActiveVerticalDeadzone then
-		local ActiveVerticalMultiplier = VerticalVelocity > 0
-			and TargetingSettings.RisingMultiplier
-			or TargetingSettings.VerticalMultiplier
-		local VerticalPredictionTime = VerticalActivePrediction * ActiveVerticalMultiplier
-
-		if VerticalVelocity < 0 then
-			VerticalPredictionTime = VerticalPredictionTime * TargetingSettings.FallingMultiplier
-		end
+	if Airborne then
+		local VerticalPredictionScale = TargetingSettings.FallingPredictionScale
+			+ (TargetingSettings.RisingPredictionScale - TargetingSettings.FallingPredictionScale)
+				* VerticalPhaseBlend
+		local VerticalPredictionTime = VerticalActivePrediction * VerticalPredictionScale
 
 		VerticalOffset = VerticalVelocity * VerticalPredictionTime
 			- 0.5 * workspace.Gravity * VerticalPredictionTime * VerticalPredictionTime * TargetingSettings.VerticalGravityMultiplier
 
-		local MaximumVerticalOffset = math.clamp(AimProfile.BodyHeight * 0.65, 1.25, 7)
-		local MaximumUpwardOffset = math.min(
-			MaximumVerticalOffset,
-			TargetingSettings.MaximumRisingOffset * math.clamp(AimProfile.AvatarScale, 0.6, 1.6)
+		local GeometryVerticalLimit = math.clamp(AimProfile.BodyHeight * 0.65, 1.25, 7)
+		local MotionVerticalLimit = math.abs(VerticalVelocity)
+			* VerticalActivePrediction
+			* TargetingSettings.VerticalMotionLimitScale
+		local MaximumVerticalOffset = math.clamp(
+			math.max(GeometryVerticalLimit, MotionVerticalLimit),
+			TargetingSettings.MinimumVerticalOffsetLimit,
+			TargetingSettings.MaximumVerticalOffsetLimit
 		)
-		VerticalOffset = math.clamp(VerticalOffset, -MaximumVerticalOffset, MaximumUpwardOffset)
+		VerticalOffset = math.clamp(VerticalOffset, -MaximumVerticalOffset, MaximumVerticalOffset)
 	end
 
 	local AirborneAimLowering = 0
 
 	if Airborne then
-		local BaseLowering = VerticalVelocity > ActiveVerticalDeadzone and 0.7 or 0.45
+		local BaseLowering = TargetingSettings.FallingAimLowering
+			+ (TargetingSettings.RisingAimLowering - TargetingSettings.FallingAimLowering)
+				* VerticalPhaseBlend
 		AirborneAimLowering = math.min(
 			BaseLowering * AimProfile.AvatarScale,
 			AimProfile.CoreHalfHeight * 0.48
