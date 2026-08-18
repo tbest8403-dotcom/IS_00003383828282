@@ -21,146 +21,31 @@ local SpectatorTransparency = 0.55
 local SpectatorMoveSpeed = 22
 local SpectatorVerticalSpeed = 18
 local PredictionTime = 0.15
-local TargetingSettings = {
-	Minimum = 0,
-	Maximum = 0.5,
-	MaximumHorizontalSpeed = 110,
-	MaximumVerticalSpeed = 125,
-	VelocitySmoothing = 20,
-	WalkSpeedMultiplier = 1.75,
-	DirectionChangeResponse = 0.84,
-	DirectionChangeDot = 0.4,
-	MinimumDirectionSpeed = 2,
-	SpeedChangeResponse = 0.58,
-	ToleranceResponse = 0.7,
-	AccelerationSmoothing = 14,
-	AccelerationWeight = 0.82,
-	MaximumAcceleration = 170,
-	AccelerationConsistencyResponse = 0.5,
-	AccelerationConsistencyDecay = 0.72,
-	AccelerationConsistencyFloor = 0.15,
-	MinimumAccelerationForConsistency = 12,
-	MotionSampleLifetime = 0.4,
-	MinimumSampleTime = 1 / 240,
-	EvasiveWindow = 0.27,
-	EvasiveScoreDecay = 1.15,
-	EvasiveMeanSmoothing = 0.58,
-	EvasiveBlendStart = 0.42,
-	EvasiveBlendRange = 1.4,
-	PatternMaximumInterval = 0.24,
-	PatternIntervalSmoothing = 0.5,
-	PatternBlendStart = 0.5,
-	PatternBlendRange = 1.3,
-	PatternReliabilityPower = 1.2,
-	TurnRateSmoothing = 13,
-	MaximumTurnRate = 10,
-	MinimumTurnRate = 0.3,
-	TurnConsistencyResponse = 0.42,
-	TurnConsistencyDecay = 0.7,
-	TurnPredictionStrength = 0.8,
-	TurnAccelerationSmoothing = 8,
-	TurnAccelerationSuppression = 0.1,
-	MaximumTurnAcceleration = 120,
-	TurnReversalDecay = 1,
-	TurnReversalBlendStart = 0.1,
-	TurnReversalBlendRange = 0.7,
-	StoppingMinimumDeceleration = 10,
-	StoppingConsistencyStart = 0.05,
-	StoppingConsistencyRange = 0.25,
-	StoppingPredictionStrength = 1,
-	StoppingHorizonScale = 1.5,
-	UncertaintySafetyInset = 0.05,
-	SmallRadiusSafetyInset = 0.2,
-	SmallRadiusSafetyStart = 0.45,
-	SmallRadiusSafetyEnd = 1,
-	RisingPredictionScale = 0.34,
-	FallingPredictionScale = 0.46,
-	VerticalDeadzone = 5,
-	VerticalGravityMultiplier = 0.55,
-	RisingAimLowering = 0.2,
-	FallingAimLowering = 0.3,
-	VerticalMotionLimitScale = 0.6,
-	MinimumVerticalOffsetLimit = 1.5,
-	MaximumVerticalOffsetLimit = 8,
-	JumpRiseThreshold = 10,
-	JumpFallThreshold = -8,
-	MinimumJumpLaunchVelocity = 25,
-	SpamJumpStateLifetime = 2,
-	SpamJumpMaximumInterval = 1.25,
-	MinimumJumpCycleInterval = 0.18,
-	SpamJumpScoreDecay = 0.35,
-	SpamJumpBlendStart = 1.1,
-	SpamJumpBlendRange = 0.45,
-	JumpDwellSmoothing = 0.55,
-	JumpLaunchSmoothing = 0.45,
-	DefaultJumpDwell = 0.025,
-	MaximumJumpDwell = 0.14,
-	SpamGroundPredictionWindow = 0.15,
-	SpamCyclePredictionScale = 1.05,
-	SpamCycleMinimumTime = 0.018,
-	SpamCycleMaximumTime = 0.32,
-	SpamCyclePredictionStrength = 0.95,
-	SpamAimLowering = 0.06,
-	SpamTimingWindow = 0.04,
-	SpamTimingVelocityThreshold = -4,
-	SpamTimingTorsoRangeScale = 1.7,
-	SpamTimingMinimumStrength = 0.25,
-	SpamTimingVerticalLift = 0.04,
-	SpamGroundRayDistance = 64,
-	PingWeight = 0.5,
-	VerticalPingInfluence = 0.05,
-	MaximumPing = 0.12,
-	MaximumTotal = 0.6,
-	PingUpdateInterval = 0.25,
-	PingSmoothingAlpha = 0.18,
-	ClosingSpeedThreshold = 1,
-	CenterWeight = 0.045,
-	SwitchBias = 4,
-	AimInsetRatio = 0.16,
-	MinimumAimInset = 0.08,
-	VisibleAimProbeRatio = 0.28,
-	ClickDebounce = 0.08,
-	StaffShotMinimumMuzzleClearance = 0.35,
-	StaffShotMaximumMuzzleClearance = 3,
-	StaffShotMuzzleSurfaceGap = 0.25,
-	StaffShotSurfaceProbeDistance = 32,
-	StaffShotMovementAlignmentSpeed = 2.5,
-	StaffShotDiagonalWeight = 0.68,
-	StaffShotShotToTeleportDelay = 0.04,
-	StaffShotTeleportHold = 0.01,
-	StaffShotEquipDelay = 0.01,
-	StaffShotBaseLead = 0.008,
-	StaffShotPingLeadScale = 0.82,
-	StaffShotMaximumLeadTime = 0.09,
-	StaffShotHorizontalIntentBlend = 0.18,
-	StaffShotHorizontalLeadRadiusScale = 1.5,
-	StaffShotMinimumHorizontalLeadLimit = 0.35,
-	StaffShotMaximumHorizontalLeadLimit = 1.6,
-	StaffShotVerticalLeadScale = 0.75,
-	StaffShotMaximumVerticalLead = 1.8,
-	StaffShotRayLength = 512,
-	AutoGrabInterval = 0.12,
-	AutoGrabTouchDuration = 0.05,
-	RoleRefreshInterval = 0.2,
-	PreferredAimParts = {
-		"UpperTorso",
-		"Torso",
-		"LowerTorso",
-		"HumanoidRootPart",
-		"Head"
-	},
-	TorsoAimParts = {
-		"UpperTorso",
-		"LowerTorso",
-		"Torso"
-	},
-	VisibleFallbackParts = {
-		"UpperTorso",
-		"LowerTorso",
-		"Torso",
-		"Head"
-	}
-}
+local MinimumPrediction = 0
+local MaximumPrediction = 0.5
+local MaximumHorizontalVelocity = 110
+local MaximumVerticalVelocity = 125
+local PredictionVelocitySmoothing = 16
+local PredictionWalkSpeedMultiplier = 1.75
+local PredictionAimPartBias = 0.62
+local VerticalPredictionMultiplier = 0.62
+local RisingPredictionMultiplier = 0.22
+local FallingPredictionMultiplier = 0.8
+local VerticalPredictionDeadzone = 5
+local VerticalGravityMultiplier = 0.55
+local MaximumRisingPredictionOffset = 1.1
+local PingPredictionWeight = 0.5
+local VerticalPingInfluence = 0.05
+local MaximumPingPrediction = 0.12
+local MaximumTotalPrediction = 0.6
+local PingUpdateInterval = 0.25
+local PingSmoothingAlpha = 0.18
+local ClosingSpeedThreshold = 1
+local ClickDebounce = 0.08
+local StaffShotHeight = 8
+local AutoGrabGunInterval = 0.12
+local AutoGrabTouchDuration = 0.05
+local RoleRefreshInterval = 0.2
 local LastShotTime = 0
 local AutoGrabGunAccumulator = 0
 local SmoothedNetworkPing
@@ -324,7 +209,6 @@ local CachedPlayers = Players:GetPlayers()
 local CharacterPartCache = setmetatable({}, { __mode = "k" })
 local OriginalManualActivation = setmetatable({}, { __mode = "k" })
 local PredictionVelocitySamples = setmetatable({}, { __mode = "k" })
-local JumpMotionSamples = setmetatable({}, { __mode = "k" })
 local RoleHighlights = {}
 local GunDropHighlight
 local PlayerRoles = {}
@@ -356,7 +240,6 @@ local FinishPreviewSyncedAction
 local MoveRealCharacterBelowPreview
 local DisableSpectator
 local EnableSpectator
-local ShootTargetWithMurdererLogic
 
 local SpectatorClone
 local SpectatorCloneHumanoid
@@ -505,9 +388,6 @@ local function HasNamedTool(Container, ToolName)
 end
 
 local function ClearCharacterPartCache(Character)
-	PredictionVelocitySamples[Character] = nil
-	JumpMotionSamples[Character] = nil
-
 	local Entry = CharacterPartCache[Character]
 	if not Entry then
 		return
@@ -749,116 +629,31 @@ local function HasClearShot(OriginPosition, TargetCharacter, TargetPosition)
 	return Result == nil or Result.Instance:IsDescendantOf(TargetCharacter)
 end
 
-local function GetPreferredAimPart(Character)
-	for _, PartName in ipairs(TargetingSettings.PreferredAimParts) do
-		local Part = Character:FindFirstChild(PartName)
+local function GetAvatarPredictionScale(Humanoid)
+	local TotalScale = 0
+	local ScaleCount = 0
 
-		if Part and Part:IsA("BasePart") then
-			return Part
+	for _, ScaleName in ipairs({ "BodyWidthScale", "BodyDepthScale", "BodyHeightScale" }) do
+		local ScaleValue = Humanoid:FindFirstChild(ScaleName)
+
+		if ScaleValue and ScaleValue:IsA("NumberValue") then
+			TotalScale = TotalScale + ScaleValue.Value
+			ScaleCount = ScaleCount + 1
 		end
 	end
 
-	return nil
-end
-
-local function GetWorldVerticalHalfExtent(Part)
-	local HalfSize = Part.Size * 0.5
-	local PartCFrame = Part.CFrame
-
-	return math.abs(PartCFrame.RightVector.Y) * HalfSize.X
-		+ math.abs(PartCFrame.UpVector.Y) * HalfSize.Y
-		+ math.abs(PartCFrame.LookVector.Y) * HalfSize.Z
-end
-
-local function GetAvatarAimProfile(TargetCharacter, Root, AimPart)
-	local WeightedPosition = Vector3.zero
-	local TotalWeight = 0
-	local CoreMinimumY = math.huge
-	local CoreMaximumY = -math.huge
-	local CoreHorizontalRadius = math.huge
-	local BodyMinimumY = math.huge
-	local BodyMaximumY = -math.huge
-
-	for _, BodyPart in ipairs(GetCharacterBodyParts(TargetCharacter)) do
-		if BodyPart.Parent == TargetCharacter and BodyPart ~= Root then
-			local HalfY = GetWorldVerticalHalfExtent(BodyPart)
-			BodyMinimumY = math.min(BodyMinimumY, BodyPart.Position.Y - HalfY)
-			BodyMaximumY = math.max(BodyMaximumY, BodyPart.Position.Y + HalfY)
-		end
+	if ScaleCount == 0 then
+		return 1
 	end
 
-	for _, PartName in ipairs(TargetingSettings.TorsoAimParts) do
-		local Part = TargetCharacter:FindFirstChild(PartName)
-
-		if Part and Part:IsA("BasePart") then
-			local HalfY = GetWorldVerticalHalfExtent(Part)
-			local Weight = math.max(Part.Size.X * Part.Size.Y * Part.Size.Z, 0.01)
-			WeightedPosition = WeightedPosition + Part.Position * Weight
-			TotalWeight = TotalWeight + Weight
-			CoreMinimumY = math.min(CoreMinimumY, Part.Position.Y - HalfY)
-			CoreMaximumY = math.max(CoreMaximumY, Part.Position.Y + HalfY)
-			CoreHorizontalRadius = math.min(
-				CoreHorizontalRadius,
-				math.max(math.min(Part.Size.X, Part.Size.Z) * 0.5, 0.15)
-			)
-		end
-	end
-
-	local FallbackPart = AimPart and AimPart:IsA("BasePart") and AimPart or Root
-	local AimPosition
-
-	if TotalWeight > 0 then
-		AimPosition = WeightedPosition / TotalWeight
-	else
-		local HalfY = GetWorldVerticalHalfExtent(FallbackPart)
-		AimPosition = FallbackPart.Position
-		CoreMinimumY = FallbackPart.Position.Y - HalfY
-		CoreMaximumY = FallbackPart.Position.Y + HalfY
-		CoreHorizontalRadius = math.max(math.min(FallbackPart.Size.X, FallbackPart.Size.Z) * 0.5, 0.15)
-	end
-
-	if BodyMinimumY == math.huge or BodyMaximumY == -math.huge then
-		BodyMinimumY = CoreMinimumY
-		BodyMaximumY = CoreMaximumY
-	end
-
-	local CoreHeight = math.max(CoreMaximumY - CoreMinimumY, 0.5)
-	local CoreHalfHeight = CoreHeight * 0.5
-	local AimInset = math.clamp(
-		CoreHeight * TargetingSettings.AimInsetRatio,
-		TargetingSettings.MinimumAimInset,
-		CoreHalfHeight * 0.45
-	)
-	local SafeMinimumY = CoreMinimumY + AimInset
-	local SafeMaximumY = CoreMaximumY - AimInset
-
-	AimPosition = Vector3.new(
-		AimPosition.X,
-		math.clamp(AimPosition.Y, SafeMinimumY, SafeMaximumY),
-		AimPosition.Z
-	)
-
-	local BodyHeight = math.max(BodyMaximumY - BodyMinimumY, CoreHeight)
-	local AvatarScale = math.clamp(BodyHeight / 5, 0.4, 2.5)
-
-	return {
-		AimPosition = AimPosition,
-		AvatarScale = AvatarScale,
-		BodyHeight = BodyHeight,
-		CoreHalfHeight = CoreHalfHeight,
-		CoreHorizontalRadius = CoreHorizontalRadius,
-		GroundToAimHeight = math.clamp(
-			AimPosition.Y - BodyMinimumY,
-			CoreHalfHeight * 0.5,
-			BodyHeight
-		)
-	}
+	local AverageScale = TotalScale / ScaleCount
+	return math.clamp(0.75 + AverageScale * 0.25, 0.85, 1.05)
 end
 
 local function GetPingPredictionOffset()
 	local CurrentTime = os.clock()
 
-	if CurrentTime - LastNetworkPingUpdate >= TargetingSettings.PingUpdateInterval then
+	if CurrentTime - LastNetworkPingUpdate >= PingUpdateInterval then
 		LastNetworkPingUpdate = CurrentTime
 
 		local Success, NetworkPing = pcall(function()
@@ -866,615 +661,50 @@ local function GetPingPredictionOffset()
 		end)
 
 		if Success and type(NetworkPing) == "number" and NetworkPing == NetworkPing and NetworkPing >= 0 then
-			NetworkPing = math.clamp(NetworkPing, 0, TargetingSettings.MaximumPing / TargetingSettings.PingWeight)
+			NetworkPing = math.clamp(NetworkPing, 0, MaximumPingPrediction / PingPredictionWeight)
 
 			if SmoothedNetworkPing then
 				SmoothedNetworkPing = SmoothedNetworkPing
-					+ (NetworkPing - SmoothedNetworkPing) * TargetingSettings.PingSmoothingAlpha
+					+ (NetworkPing - SmoothedNetworkPing) * PingSmoothingAlpha
 			else
 				SmoothedNetworkPing = NetworkPing
 			end
 		end
 	end
 
-	return math.clamp((SmoothedNetworkPing or 0) * TargetingSettings.PingWeight, 0, TargetingSettings.MaximumPing)
+	return math.clamp((SmoothedNetworkPing or 0) * PingPredictionWeight, 0, MaximumPingPrediction)
 end
 
-local function UpdateJumpMotionState(TargetCharacter, Airborne, VerticalVelocity)
-	local CurrentTime = os.clock()
-	local Sample = JumpMotionSamples[TargetCharacter]
-
-	if not Sample or CurrentTime - Sample.Time > TargetingSettings.SpamJumpStateLifetime then
-		local InitialTakeoffTime = Airborne
-			and VerticalVelocity >= TargetingSettings.JumpRiseThreshold
-			and CurrentTime
-			or nil
-		local InitialScore = InitialTakeoffTime and 1 or 0
-		local InitialState = {
-			Time = CurrentTime,
-			Airborne = Airborne,
-			VerticalVelocity = VerticalVelocity,
-			WasFalling = VerticalVelocity <= TargetingSettings.JumpFallThreshold,
-			LastTakeoffTime = InitialTakeoffTime,
-			LastLandingTime = nil,
-			ChainScore = InitialScore,
-			EstimatedDwell = TargetingSettings.DefaultJumpDwell,
-			LaunchVelocity = math.max(VerticalVelocity, TargetingSettings.MinimumJumpLaunchVelocity)
-		}
-		JumpMotionSamples[TargetCharacter] = InitialState
-		return InitialState, 0
-	end
-
-	local DeltaTime = math.clamp(CurrentTime - Sample.Time, 0, 0.2)
-	local ChainScore = (Sample.ChainScore or 0)
-		* math.exp(-TargetingSettings.SpamJumpScoreDecay * DeltaTime)
-	local WasFalling = Sample.WasFalling or false
-	local LastTakeoffTime = Sample.LastTakeoffTime
-	local LastLandingTime = Sample.LastLandingTime
-	local EstimatedDwell = Sample.EstimatedDwell or TargetingSettings.DefaultJumpDwell
-	local LaunchVelocity = Sample.LaunchVelocity or TargetingSettings.MinimumJumpLaunchVelocity
-	local JustLanded = not Airborne and Sample.Airborne
-
-	if JustLanded then
-		LastLandingTime = CurrentTime
-		WasFalling = true
-	end
-
-	local NewRise = Airborne
-		and VerticalVelocity >= TargetingSettings.JumpRiseThreshold
-		and (
-			not Sample.Airborne
-			or Sample.VerticalVelocity < TargetingSettings.JumpRiseThreshold
-			or WasFalling
-		)
-
-	if NewRise
-		and (
-			LastTakeoffTime == nil
-			or CurrentTime - LastTakeoffTime >= TargetingSettings.MinimumJumpCycleInterval
-		) then
-		local RepeatedJump = LastTakeoffTime ~= nil
-			and CurrentTime - LastTakeoffTime <= TargetingSettings.SpamJumpMaximumInterval
-			and WasFalling
-
-		ChainScore = RepeatedJump and ChainScore + 1 or 1
-
-		if LastLandingTime ~= nil then
-			local ObservedDwell = CurrentTime - LastLandingTime
-
-			if ObservedDwell <= TargetingSettings.MaximumJumpDwell then
-				EstimatedDwell = EstimatedDwell
-					+ (ObservedDwell - EstimatedDwell) * TargetingSettings.JumpDwellSmoothing
-			end
-		end
-
-		local ObservedLaunchVelocity = math.max(
-			VerticalVelocity,
-			TargetingSettings.MinimumJumpLaunchVelocity
-		)
-		LaunchVelocity = LaunchVelocity
-			+ (ObservedLaunchVelocity - LaunchVelocity) * TargetingSettings.JumpLaunchSmoothing
-		LastTakeoffTime = CurrentTime
-		WasFalling = false
-	elseif Airborne and VerticalVelocity <= TargetingSettings.JumpFallThreshold then
-		WasFalling = true
-	end
-
-	if Airborne and VerticalVelocity > LaunchVelocity then
-		LaunchVelocity = LaunchVelocity
-			+ (VerticalVelocity - LaunchVelocity) * TargetingSettings.JumpLaunchSmoothing
-	end
-
-	local State = {
-		Time = CurrentTime,
-		Airborne = Airborne,
-		VerticalVelocity = VerticalVelocity,
-		WasFalling = WasFalling,
-		LastTakeoffTime = LastTakeoffTime,
-		LastLandingTime = LastLandingTime,
-		ChainScore = math.clamp(ChainScore, 0, 4),
-		EstimatedDwell = math.clamp(EstimatedDwell, 0, TargetingSettings.MaximumJumpDwell),
-		LaunchVelocity = math.clamp(
-			LaunchVelocity,
-			TargetingSettings.MinimumJumpLaunchVelocity,
-			TargetingSettings.MaximumVerticalSpeed
-		)
-	}
-	JumpMotionSamples[TargetCharacter] = State
-
-	local SpamJumpBlend = math.clamp(
-		(State.ChainScore - TargetingSettings.SpamJumpBlendStart)
-			/ TargetingSettings.SpamJumpBlendRange,
-		0,
-		1
-	)
-	return State, SpamJumpBlend
-end
-
-local function GetSpamJumpPredictedY(
-	CurrentAimY,
-	MinimumAimY,
-	VerticalVelocity,
-	PredictionTime,
-	Airborne,
-	TimeSinceLanding,
-	JumpState
-)
-	local Gravity = math.max(workspace.Gravity, 0.01)
-	local RemainingTime = math.max(PredictionTime, 0)
-	local PositionY = math.max(CurrentAimY, MinimumAimY)
-	local ActiveVerticalVelocity = Airborne and VerticalVelocity or 0
-	local IsAirborne = Airborne
-	local RemainingDwell = IsAirborne
-		and JumpState.EstimatedDwell
-		or math.max(JumpState.EstimatedDwell - TimeSinceLanding, 0)
-
-	for _ = 1, 3 do
-		if IsAirborne then
-			local HeightAboveGround = math.max(PositionY - MinimumAimY, 0)
-			local TimeToLanding = (
-				ActiveVerticalVelocity
-					+ math.sqrt(
-						ActiveVerticalVelocity * ActiveVerticalVelocity
-							+ 2 * Gravity * HeightAboveGround
-					)
-			) / Gravity
-
-			if RemainingTime <= TimeToLanding then
-				return math.max(
-					PositionY
-						+ ActiveVerticalVelocity * RemainingTime
-						- 0.5 * Gravity * RemainingTime * RemainingTime,
-					MinimumAimY
-				)
-			end
-
-			RemainingTime = RemainingTime - TimeToLanding
-			PositionY = MinimumAimY
-			ActiveVerticalVelocity = 0
-			IsAirborne = false
-			RemainingDwell = JumpState.EstimatedDwell
-		end
-
-		if RemainingTime <= RemainingDwell then
-			return MinimumAimY
-		end
-
-		RemainingTime = RemainingTime - RemainingDwell
-		PositionY = MinimumAimY
-		ActiveVerticalVelocity = JumpState.LaunchVelocity
-		IsAirborne = true
-	end
-
-	return math.max(
-		PositionY
-			+ ActiveVerticalVelocity * RemainingTime
-			- 0.5 * Gravity * RemainingTime * RemainingTime,
-		MinimumAimY
-	)
-end
-
-local function GetFilteredPredictionMotion(TargetCharacter, Root, Humanoid, TargetTolerance, PredictionHorizon)
+local function GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
 	local CurrentTime = os.clock()
 	local RawVelocity = Root.AssemblyLinearVelocity
-	local HorizontalLimit = math.min(
-		TargetingSettings.MaximumHorizontalSpeed,
-		math.max(20, Humanoid.WalkSpeed * TargetingSettings.WalkSpeedMultiplier)
-	)
-	local RawHorizontalVelocity = Vector3.new(RawVelocity.X, 0, RawVelocity.Z)
-
-	if RawHorizontalVelocity.Magnitude > HorizontalLimit then
-		RawHorizontalVelocity = RawHorizontalVelocity.Unit * HorizontalLimit
-	elseif RawHorizontalVelocity.Magnitude < 0.75 then
-		RawHorizontalVelocity = Vector3.zero
-	end
-
 	local Sample = PredictionVelocitySamples[TargetCharacter]
-	local FilteredVelocity = RawHorizontalVelocity
-	local FilteredAcceleration = Vector3.zero
-	local PredictionVelocity = RawHorizontalVelocity
-	local MotionUncertainty = 0
-	local ReversalVelocity = RawHorizontalVelocity
-	local ReversalScore = 0
-	local LastDirectionChangeTime
-	local PatternInterval
-	local PatternReliability = 0
-	local AccelerationConsistency = 0
-	local LatestRawAcceleration = Vector3.zero
-	local FilteredTurnRate = 0
-	local TurnConsistency = 0
-	local LatestRawTurnRate = 0
-	local FilteredTurnAcceleration = 0
-	local TurnReversalScore = 0
+	local FilteredVelocity = RawVelocity
 
-	if Sample and CurrentTime - Sample.Time <= TargetingSettings.MotionSampleLifetime then
+	if Sample and CurrentTime - Sample.Time <= 0.35 then
 		local DeltaTime = math.clamp(CurrentTime - Sample.Time, 0, 0.1)
-		local Difference = RawHorizontalVelocity - Sample.Velocity
-		local DirectionChanged = false
-		local DirectionReference = Sample.Velocity
-
-		if RawHorizontalVelocity.Magnitude > TargetingSettings.MinimumDirectionSpeed
-			and DirectionReference.Magnitude > TargetingSettings.MinimumDirectionSpeed then
-			DirectionChanged = RawHorizontalVelocity.Unit:Dot(DirectionReference.Unit)
-				< TargetingSettings.DirectionChangeDot
-		end
-
-		ReversalVelocity = Sample.ReversalVelocity or Sample.Velocity
-		ReversalScore = (Sample.ReversalScore or 0)
-			* math.exp(-TargetingSettings.EvasiveScoreDecay * DeltaTime)
-		LastDirectionChangeTime = Sample.LastDirectionChangeTime
-		PatternInterval = Sample.PatternInterval
-		PatternReliability = Sample.PatternReliability or 0
-		AccelerationConsistency = Sample.AccelerationConsistency or 0
-		LatestRawAcceleration = Sample.RawAcceleration or Vector3.zero
-		FilteredTurnRate = Sample.TurnRate or 0
-		TurnConsistency = Sample.TurnConsistency or 0
-		LatestRawTurnRate = Sample.RawTurnRate or 0
-		FilteredTurnAcceleration = Sample.TurnAcceleration or 0
-		TurnReversalScore = (Sample.TurnReversalScore or 0)
-			* math.exp(-TargetingSettings.TurnReversalDecay * DeltaTime)
-
-		if DeltaTime >= TargetingSettings.MinimumSampleTime then
-			local Alpha = 1 - math.exp(-TargetingSettings.VelocitySmoothing * DeltaTime)
-			local SpeedChange = math.abs(RawHorizontalVelocity.Magnitude - Sample.Velocity.Magnitude)
-
-			if DirectionChanged then
-				Alpha = math.max(Alpha, TargetingSettings.DirectionChangeResponse)
-			elseif Difference.Magnitude > math.max(6, HorizontalLimit * 0.25)
-				or SpeedChange > math.max(4, HorizontalLimit * 0.2) then
-				Alpha = math.max(Alpha, TargetingSettings.SpeedChangeResponse)
-			end
-
-			if Difference.Magnitude * PredictionHorizon > TargetTolerance then
-				Alpha = math.max(Alpha, TargetingSettings.ToleranceResponse)
-			end
-
-			FilteredVelocity = Sample.Velocity:Lerp(RawHorizontalVelocity, Alpha)
-			MotionUncertainty = (RawHorizontalVelocity - FilteredVelocity).Magnitude
-
-			if not DirectionChanged
-				and FilteredVelocity.Magnitude > TargetingSettings.MinimumDirectionSpeed
-				and Sample.Velocity.Magnitude > TargetingSettings.MinimumDirectionSpeed then
-				local Cross = Sample.Velocity.X * FilteredVelocity.Z
-					- Sample.Velocity.Z * FilteredVelocity.X
-				local AngleChange = math.atan2(Cross, Sample.Velocity:Dot(FilteredVelocity))
-				LatestRawTurnRate = math.clamp(
-					AngleChange / DeltaTime,
-					-TargetingSettings.MaximumTurnRate,
-					TargetingSettings.MaximumTurnRate
-				)
-				local TurnAlpha = 1 - math.exp(-TargetingSettings.TurnRateSmoothing * DeltaTime)
-				FilteredTurnRate = FilteredTurnRate
-					+ (LatestRawTurnRate - FilteredTurnRate) * TurnAlpha
-				local PreviousRawTurnRate = Sample.RawTurnRate or 0
-
-				if math.abs(LatestRawTurnRate) >= TargetingSettings.MinimumTurnRate
-					and math.abs(PreviousRawTurnRate) >= TargetingSettings.MinimumTurnRate
-					and math.sign(LatestRawTurnRate) ~= math.sign(PreviousRawTurnRate) then
-					TurnReversalScore = math.clamp(TurnReversalScore + 1, 0, 3)
-				end
-
-				local RawTurnAcceleration = math.clamp(
-					(LatestRawTurnRate - PreviousRawTurnRate) / DeltaTime,
-					-TargetingSettings.MaximumTurnAcceleration,
-					TargetingSettings.MaximumTurnAcceleration
-				)
-				local TurnAccelerationAlpha = 1
-					- math.exp(-TargetingSettings.TurnAccelerationSmoothing * DeltaTime)
-				FilteredTurnAcceleration = FilteredTurnAcceleration
-					+ (RawTurnAcceleration - FilteredTurnAcceleration) * TurnAccelerationAlpha
-
-				local TurnConsistencyTarget = 0
-				if math.abs(LatestRawTurnRate) >= TargetingSettings.MinimumTurnRate
-					and math.abs(PreviousRawTurnRate) >= TargetingSettings.MinimumTurnRate
-					and math.sign(LatestRawTurnRate) == math.sign(PreviousRawTurnRate) then
-					TurnConsistencyTarget = math.clamp(
-						1 - math.abs(LatestRawTurnRate - PreviousRawTurnRate)
-							/ math.max(math.abs(PreviousRawTurnRate), TargetingSettings.MinimumTurnRate),
-						0,
-						1
-					)
-				end
-
-				if TurnConsistencyTarget > TurnConsistency then
-					TurnConsistency = TurnConsistency
-						+ (TurnConsistencyTarget - TurnConsistency)
-							* TargetingSettings.TurnConsistencyResponse
-				else
-					TurnConsistency = TurnConsistency * TargetingSettings.TurnConsistencyDecay
-				end
-			end
-
-			if not DirectionChanged then
-				LatestRawAcceleration = (FilteredVelocity - Sample.Velocity) / DeltaTime
-
-				if LatestRawAcceleration.Magnitude > TargetingSettings.MaximumAcceleration then
-					LatestRawAcceleration = LatestRawAcceleration.Unit * TargetingSettings.MaximumAcceleration
-				end
-
-				local AccelerationAlpha = 1 - math.exp(-TargetingSettings.AccelerationSmoothing * DeltaTime)
-				FilteredAcceleration = Sample.Acceleration:Lerp(LatestRawAcceleration, AccelerationAlpha)
-				local PreviousRawAcceleration = Sample.RawAcceleration or Vector3.zero
-				local AccelerationConsistencyTarget = 0
-
-				if LatestRawAcceleration.Magnitude >= TargetingSettings.MinimumAccelerationForConsistency
-					and PreviousRawAcceleration.Magnitude
-						>= TargetingSettings.MinimumAccelerationForConsistency then
-					AccelerationConsistencyTarget = math.clamp(
-						(LatestRawAcceleration.Unit:Dot(PreviousRawAcceleration.Unit) - 0.05) / 0.95,
-						0,
-						1
-					)
-				end
-
-				if AccelerationConsistencyTarget > AccelerationConsistency then
-					AccelerationConsistency = AccelerationConsistency
-						+ (AccelerationConsistencyTarget - AccelerationConsistency)
-							* TargetingSettings.AccelerationConsistencyResponse
-				else
-					AccelerationConsistency = AccelerationConsistency
-						* TargetingSettings.AccelerationConsistencyDecay
-				end
-			end
-		else
-			if DirectionChanged then
-				FilteredVelocity = Sample.Velocity:Lerp(RawHorizontalVelocity, TargetingSettings.DirectionChangeResponse)
-			else
-				FilteredVelocity = Sample.Velocity
-				FilteredAcceleration = Sample.Acceleration
-			end
-
-			MotionUncertainty = (RawHorizontalVelocity - FilteredVelocity).Magnitude
-		end
-
-		if DirectionChanged then
-			TurnConsistency = 0
-			local PreviousRawVelocity = Sample.RawVelocity or Sample.Velocity
-			local ReversalMean = (PreviousRawVelocity + RawHorizontalVelocity) * 0.5
-			local RepeatedReversal = LastDirectionChangeTime ~= nil
-				and CurrentTime - LastDirectionChangeTime <= TargetingSettings.EvasiveWindow
-
-			if RepeatedReversal then
-				ReversalVelocity = ReversalVelocity:Lerp(ReversalMean, TargetingSettings.EvasiveMeanSmoothing)
-				ReversalScore = ReversalScore + 1
-			else
-				ReversalVelocity = ReversalMean
-				ReversalScore = ReversalScore + 0.25
-			end
-
-			if LastDirectionChangeTime ~= nil then
-				local NewInterval = CurrentTime - LastDirectionChangeTime
-				if NewInterval <= TargetingSettings.PatternMaximumInterval then
-					if PatternInterval ~= nil then
-						local RelativeError = math.abs(NewInterval - PatternInterval)
-							/ math.max(PatternInterval, 0.02)
-						local NewReliability = math.clamp(1 - RelativeError * 1.8, 0, 1)
-						PatternReliability = PatternReliability
-							+ (NewReliability - PatternReliability) * 0.45
-						PatternInterval = PatternInterval
-							+ (NewInterval - PatternInterval)
-								* TargetingSettings.PatternIntervalSmoothing
-					else
-						PatternInterval = NewInterval
-						PatternReliability = 0.35
-					end
-				end
-			end
-
-			LastDirectionChangeTime = CurrentTime
-		end
-
-		ReversalScore = math.clamp(ReversalScore, 0, 3)
-		local EvasiveBlend = math.clamp(
-			(ReversalScore - TargetingSettings.EvasiveBlendStart) / TargetingSettings.EvasiveBlendRange,
-			0,
-			1
-		)
-		PredictionVelocity = FilteredVelocity:Lerp(ReversalVelocity, EvasiveBlend)
-		FilteredAcceleration = FilteredAcceleration * (1 - EvasiveBlend)
-		MotionUncertainty = (RawHorizontalVelocity - PredictionVelocity).Magnitude
+		local Alpha = 1 - math.exp(-PredictionVelocitySmoothing * DeltaTime)
+		FilteredVelocity = Sample.Velocity:Lerp(RawVelocity, Alpha)
 	end
 
 	PredictionVelocitySamples[TargetCharacter] = {
 		Velocity = FilteredVelocity,
-		Acceleration = FilteredAcceleration,
-		RawVelocity = RawHorizontalVelocity,
-		RawAcceleration = LatestRawAcceleration,
-		AccelerationConsistency = AccelerationConsistency,
-		ReversalVelocity = ReversalVelocity,
-		ReversalScore = ReversalScore,
-		LastDirectionChangeTime = LastDirectionChangeTime,
-		PatternInterval = PatternInterval,
-		PatternReliability = PatternReliability,
-		TurnRate = FilteredTurnRate,
-		TurnConsistency = TurnConsistency,
-		RawTurnRate = LatestRawTurnRate,
-		TurnAcceleration = FilteredTurnAcceleration,
-		TurnReversalScore = TurnReversalScore,
 		Time = CurrentTime
 	}
 
-	local AccelerationTime = math.min(PredictionHorizon, 0.25)
-	local ProjectedUncertainty = MotionUncertainty * PredictionHorizon
-	local GeometryConfidence = math.clamp(
-		TargetTolerance / math.max(TargetTolerance + ProjectedUncertainty, 0.01),
-		0.2,
-		1
+	local HorizontalVelocity = Vector3.new(FilteredVelocity.X, 0, FilteredVelocity.Z)
+	local HorizontalLimit = math.min(
+		MaximumHorizontalVelocity,
+		math.max(20, Humanoid.WalkSpeed * PredictionWalkSpeedMultiplier)
 	)
-	local AccelerationConfidence = TargetingSettings.AccelerationConsistencyFloor
-		+ (1 - TargetingSettings.AccelerationConsistencyFloor)
-			* math.clamp(AccelerationConsistency, 0, 1)
-	local AccelerationOffset = Vector3.zero
 
-	if PredictionVelocity.Magnitude >= 1 then
-		AccelerationOffset = FilteredAcceleration
-			* (
-				0.5
-					* AccelerationTime
-					* AccelerationTime
-					* TargetingSettings.AccelerationWeight
-					* GeometryConfidence
-					* AccelerationConfidence
-			)
+	if HorizontalVelocity.Magnitude > HorizontalLimit then
+		HorizontalVelocity = HorizontalVelocity.Unit * HorizontalLimit
+	elseif HorizontalVelocity.Magnitude < 1 then
+		HorizontalVelocity = Vector3.zero
 	end
 
-	local VelocityOffset = PredictionVelocity * PredictionHorizon
-	local HorizontalOffset = VelocityOffset + AccelerationOffset
-
-	if VelocityOffset.Magnitude > 0 and HorizontalOffset:Dot(VelocityOffset) < 0 then
-		HorizontalOffset = Vector3.zero
-	elseif VelocityOffset.Magnitude == 0 then
-		HorizontalOffset = Vector3.zero
-	end
-
-	if math.abs(FilteredTurnRate) >= TargetingSettings.MinimumTurnRate
-		and TurnConsistency > 0
-		and PredictionVelocity.Magnitude >= 1 then
-		local TurnAngle = FilteredTurnRate * PredictionHorizon
-		local Sine = math.sin(TurnAngle)
-		local Cosine = math.cos(TurnAngle)
-		local ArcOffset = Vector3.new(
-			(PredictionVelocity.X * Sine - PredictionVelocity.Z * (1 - Cosine)) / FilteredTurnRate,
-			0,
-			(PredictionVelocity.X * (1 - Cosine) + PredictionVelocity.Z * Sine) / FilteredTurnRate
-		)
-		local ForwardDirection = PredictionVelocity.Unit
-		local TangentialAcceleration = ForwardDirection
-			* FilteredAcceleration:Dot(ForwardDirection)
-		local ArcAccelerationOffset = TangentialAcceleration
-			* (0.5 * AccelerationTime * AccelerationTime * TargetingSettings.AccelerationWeight)
-		local TurnRateConfidence = math.clamp(
-			(math.abs(FilteredTurnRate) - TargetingSettings.MinimumTurnRate)
-				/ math.max(TargetingSettings.MinimumTurnRate * 2, 0.01),
-			0,
-			1
-		)
-		local EvasiveSuppression = 1 - math.clamp(ReversalScore / 1.5, 0, 1)
-		local TurnAccelerationSuppression = math.clamp(
-			1 - math.abs(FilteredTurnAcceleration)
-				* PredictionHorizon
-				/ math.max(math.abs(FilteredTurnRate), TargetingSettings.MinimumTurnRate)
-				* TargetingSettings.TurnAccelerationSuppression,
-			0,
-			1
-		)
-		local TurnReversalSuppression = 1 - math.clamp(
-			(TurnReversalScore - TargetingSettings.TurnReversalBlendStart)
-				/ TargetingSettings.TurnReversalBlendRange,
-			0,
-			1
-		)
-		local TurnBlend = math.clamp(
-			TurnConsistency
-				* TargetingSettings.TurnPredictionStrength
-				* TurnRateConfidence
-				* EvasiveSuppression
-				* TurnAccelerationSuppression
-				* TurnReversalSuppression,
-			0,
-			1
-		)
-		HorizontalOffset = HorizontalOffset:Lerp(ArcOffset + ArcAccelerationOffset, TurnBlend)
-	end
-
-	if PredictionVelocity.Magnitude >= 1 then
-		local ForwardDirection = PredictionVelocity.Unit
-		local TangentialDeceleration = FilteredAcceleration:Dot(ForwardDirection)
-
-		if TangentialDeceleration <= -TargetingSettings.StoppingMinimumDeceleration then
-			local TimeToStop = PredictionVelocity.Magnitude / -TangentialDeceleration
-
-			if TimeToStop <= PredictionHorizon * TargetingSettings.StoppingHorizonScale then
-				local StoppingTime = math.min(TimeToStop, PredictionHorizon)
-				local StoppingDistance = math.max(
-					0,
-					PredictionVelocity.Magnitude * StoppingTime
-						+ 0.5 * TangentialDeceleration * StoppingTime * StoppingTime
-				)
-				local CurrentForwardDistance = HorizontalOffset:Dot(ForwardDirection)
-				local PerpendicularOffset = HorizontalOffset
-					- ForwardDirection * CurrentForwardDistance
-				local StoppingOffset = PerpendicularOffset
-					+ ForwardDirection * StoppingDistance
-				local StoppingBlend = math.clamp(
-					(AccelerationConsistency - TargetingSettings.StoppingConsistencyStart)
-						/ TargetingSettings.StoppingConsistencyRange,
-					0,
-					1
-				) * TargetingSettings.StoppingPredictionStrength
-
-				HorizontalOffset = HorizontalOffset:Lerp(StoppingOffset, StoppingBlend)
-			end
-		end
-	end
-
-	if PatternInterval ~= nil
-		and LastDirectionChangeTime ~= nil
-		and PatternInterval >= 0.035
-		and CurrentTime - LastDirectionChangeTime <= PatternInterval * 1.6 then
-		local TimeLeft = PredictionHorizon
-		local TimeSinceChange = CurrentTime - LastDirectionChangeTime
-		local SegmentTime = math.min(TimeLeft, math.max(0, PatternInterval - TimeSinceChange))
-		local SignedTime = SegmentTime
-		local Sign = -1
-		TimeLeft = TimeLeft - SegmentTime
-
-		while TimeLeft > 0.000001 do
-			SegmentTime = math.min(TimeLeft, PatternInterval)
-			SignedTime = SignedTime + SegmentTime * Sign
-			Sign = -Sign
-			TimeLeft = TimeLeft - SegmentTime
-		end
-
-		local OscillationVelocity = FilteredVelocity - ReversalVelocity
-		local PatternOffset = ReversalVelocity * PredictionHorizon
-			+ OscillationVelocity * SignedTime
-		local PatternBlend = math.clamp(
-			(ReversalScore - TargetingSettings.PatternBlendStart) / TargetingSettings.PatternBlendRange,
-			0,
-			1
-		) * math.clamp(PatternReliability, 0, 1) ^ TargetingSettings.PatternReliabilityPower
-		HorizontalOffset = HorizontalOffset:Lerp(PatternOffset, PatternBlend)
-	end
-
-	if HorizontalOffset.Magnitude > 0 then
-		local UncertaintyRatio = math.clamp(
-			ProjectedUncertainty / math.max(TargetTolerance, 0.05),
-			0,
-			1
-		)
-		local SmallRadiusBlend = 1 - math.clamp(
-			(TargetTolerance - TargetingSettings.SmallRadiusSafetyStart)
-				/ math.max(
-					TargetingSettings.SmallRadiusSafetyEnd
-						- TargetingSettings.SmallRadiusSafetyStart,
-					0.01
-				),
-			0,
-			1
-		)
-		local ActiveSafetyInset = TargetingSettings.UncertaintySafetyInset
-			+ (TargetingSettings.SmallRadiusSafetyInset - TargetingSettings.UncertaintySafetyInset)
-				* SmallRadiusBlend
-		local SafetyInset = math.min(
-			TargetTolerance * ActiveSafetyInset * UncertaintyRatio,
-			HorizontalOffset.Magnitude * 0.35
-		)
-		HorizontalOffset = HorizontalOffset - HorizontalOffset.Unit * SafetyInset
-	end
-
-	local MaximumHorizontalOffset = HorizontalLimit * PredictionHorizon
-		+ 0.5
-			* TargetingSettings.MaximumAcceleration
-			* AccelerationTime
-			* AccelerationTime
-			* TargetingSettings.AccelerationWeight
-
-	if HorizontalOffset.Magnitude > MaximumHorizontalOffset and MaximumHorizontalOffset > 0 then
-		HorizontalOffset = HorizontalOffset.Unit * MaximumHorizontalOffset
-	end
-
-	return HorizontalOffset, PredictionVelocity, RawVelocity.Y
+	return HorizontalVelocity, RawVelocity.Y
 end
 
 local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverride)
@@ -1482,105 +712,58 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
 	local RequestedPrediction = PredictionOverride == nil and PredictionTime or PredictionOverride
 
-	if not Root or not Humanoid then
+	if not Root or not Humanoid or RequestedPrediction <= 0 then
 		return AimPart.Position
 	end
 
-	local AimProfile = GetAvatarAimProfile(TargetCharacter, Root, AimPart)
-	local ManualPrediction = 0
-	local PingPrediction = 0
-
-	if RequestedPrediction > 0 then
-		ManualPrediction = math.clamp(RequestedPrediction, TargetingSettings.Minimum, TargetingSettings.Maximum)
-		PingPrediction = GetPingPredictionOffset()
-	end
-
-	local ActivePrediction = math.clamp(
-		ManualPrediction + PingPrediction,
-		TargetingSettings.Minimum,
-		TargetingSettings.MaximumTotal
-	)
+	local AvatarPredictionScale = GetAvatarPredictionScale(Humanoid)
+	local ManualPrediction = math.clamp(RequestedPrediction, MinimumPrediction, MaximumPrediction)
+		* AvatarPredictionScale
+	local PingPrediction = GetPingPredictionOffset() * AvatarPredictionScale
+	local ActivePrediction = math.clamp(ManualPrediction + PingPrediction, MinimumPrediction, MaximumTotalPrediction)
 	local VerticalActivePrediction = math.clamp(
-		ManualPrediction + PingPrediction * TargetingSettings.VerticalPingInfluence,
-		TargetingSettings.Minimum,
-		TargetingSettings.MaximumTotal
+		ManualPrediction + PingPrediction * VerticalPingInfluence,
+		MinimumPrediction,
+		MaximumTotalPrediction
 	)
+
 	local State = Humanoid:GetState()
 	local Airborne = State == Enum.HumanoidStateType.Jumping
 		or State == Enum.HumanoidStateType.Freefall
-		or (
-			Humanoid.FloorMaterial == Enum.Material.Air
-			and State ~= Enum.HumanoidStateType.Climbing
-			and State ~= Enum.HumanoidStateType.Seated
-			and State ~= Enum.HumanoidStateType.Swimming
-		)
-	local HorizontalOffset, HorizontalVelocity, RawVerticalVelocity =
-		GetFilteredPredictionMotion(
-			TargetCharacter,
-			Root,
-			Humanoid,
-			AimProfile.CoreHorizontalRadius,
-			ActivePrediction
-		)
-	local VerticalVelocity = Airborne
-		and math.clamp(RawVerticalVelocity, -TargetingSettings.MaximumVerticalSpeed, TargetingSettings.MaximumVerticalSpeed)
-		or 0
-	local JumpState, SpamJumpBlend = UpdateJumpMotionState(
-		TargetCharacter,
-		Airborne,
-		VerticalVelocity
-	)
-	local TimeSinceLanding = JumpState.LastLandingTime ~= nil
-		and os.clock() - JumpState.LastLandingTime
-		or math.huge
-	local SpamJumpPredictionActive = RequestedPrediction > 0
-		and SpamJumpBlend > 0
-		and (
-			Airborne
-			or TimeSinceLanding <= TargetingSettings.SpamGroundPredictionWindow
-		)
-	local ActiveVerticalDeadzone = TargetingSettings.VerticalDeadzone
-		* math.clamp(AimProfile.AvatarScale, 0.6, 1.5)
+	local HorizontalVelocity, RawVerticalVelocity = GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
+	local VerticalVelocity = Airborne and math.clamp(RawVerticalVelocity, -MaximumVerticalVelocity, MaximumVerticalVelocity) or 0
 	local VerticalOffset = 0
-	local VerticalPhaseBlend = math.clamp(
-		(VerticalVelocity + ActiveVerticalDeadzone) / (2 * ActiveVerticalDeadzone),
-		0,
-		1
-	)
 
-	if Airborne then
-		local VerticalPredictionScale = TargetingSettings.FallingPredictionScale
-			+ (TargetingSettings.RisingPredictionScale - TargetingSettings.FallingPredictionScale)
-				* VerticalPhaseBlend
-		local VerticalPredictionTime = VerticalActivePrediction * VerticalPredictionScale
+	if Airborne and math.abs(VerticalVelocity) > VerticalPredictionDeadzone then
+		local ActiveVerticalMultiplier = VerticalVelocity > 0
+			and RisingPredictionMultiplier
+			or VerticalPredictionMultiplier
+		local VerticalPredictionTime = VerticalActivePrediction * ActiveVerticalMultiplier
+
+		if VerticalVelocity < 0 then
+			VerticalPredictionTime = VerticalPredictionTime * FallingPredictionMultiplier
+		end
 
 		VerticalOffset = VerticalVelocity * VerticalPredictionTime
-			- 0.5 * workspace.Gravity * VerticalPredictionTime * VerticalPredictionTime * TargetingSettings.VerticalGravityMultiplier
+			- 0.5 * workspace.Gravity * VerticalPredictionTime * VerticalPredictionTime * VerticalGravityMultiplier
 
-		local GeometryVerticalLimit = math.clamp(AimProfile.BodyHeight * 0.65, 1.25, 7)
-		local MotionVerticalLimit = math.abs(VerticalVelocity)
-			* VerticalActivePrediction
-			* TargetingSettings.VerticalMotionLimitScale
-		local MaximumVerticalOffset = math.clamp(
-			math.max(GeometryVerticalLimit, MotionVerticalLimit),
-			TargetingSettings.MinimumVerticalOffsetLimit,
-			TargetingSettings.MaximumVerticalOffsetLimit
-		)
-		VerticalOffset = math.clamp(VerticalOffset, -MaximumVerticalOffset, MaximumVerticalOffset)
+		local MaximumVerticalOffset = math.clamp(Humanoid.HipHeight + Root.Size.Y * 0.75, 2.5, 4)
+		local MaximumUpwardOffset = math.min(MaximumVerticalOffset, MaximumRisingPredictionOffset)
+		VerticalOffset = math.clamp(VerticalOffset, -MaximumVerticalOffset, MaximumUpwardOffset)
 	end
 
+	local AimOffset = AimPart.Position - Root.Position
+	local ActiveAimPartBias = Airborne and 0.45 or PredictionAimPartBias
 	local AirborneAimLowering = 0
 
 	if Airborne then
-		local BaseLowering = TargetingSettings.FallingAimLowering
-			+ (TargetingSettings.RisingAimLowering - TargetingSettings.FallingAimLowering)
-				* VerticalPhaseBlend
-		AirborneAimLowering = math.min(
-			BaseLowering * AimProfile.AvatarScale,
-			AimProfile.CoreHalfHeight * 0.48
-		)
+		AirborneAimLowering = VerticalVelocity > VerticalPredictionDeadzone and 1 or 0.7
 	end
 
+	local StableAimPosition = Root.Position
+		+ AimOffset * ActiveAimPartBias
+		- Vector3.new(0, AirborneAimLowering, 0)
+	local HorizontalOffset = HorizontalVelocity * ActivePrediction
 	local LocalCharacter = LocalPlayer.Character
 	local LocalRoot = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
 	local ClosingSpeed = 0
@@ -1595,11 +778,8 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		if ToShooter.Magnitude > 0.01 then
 			ClosingSpeed = HorizontalVelocity:Dot(ToShooter.Unit)
 
-			if ClosingSpeed > TargetingSettings.ClosingSpeedThreshold then
-				local MaximumClosingLead = math.max(
-					ToShooter.Magnitude - AimProfile.CoreHorizontalRadius,
-					0
-				)
+			if ClosingSpeed > ClosingSpeedThreshold then
+				local MaximumClosingLead = math.max(ToShooter.Magnitude - 2, 0)
 
 				if HorizontalOffset.Magnitude > MaximumClosingLead then
 					HorizontalOffset = MaximumClosingLead > 0
@@ -1610,122 +790,22 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		end
 	end
 
-	local PredictedPosition = AimProfile.AimPosition
+	local PredictedPosition = StableAimPosition
 		+ HorizontalOffset
-		+ Vector3.new(0, VerticalOffset - AirborneAimLowering, 0)
+		+ Vector3.new(0, VerticalOffset, 0)
 
-	if Airborne
-		or SpamJumpPredictionActive
-		or VerticalOffset < 0
-		or ClosingSpeed > TargetingSettings.ClosingSpeedThreshold then
+	if ClosingSpeed > ClosingSpeedThreshold then
 		PredictionGroundParameters.FilterDescendantsInstances = LocalCharacter
 			and { TargetCharacter, LocalCharacter }
 			or { TargetCharacter }
 
-		local RayOriginY = math.max(
-			Root.Position.Y + AimProfile.BodyHeight,
-			PredictedPosition.Y + AimProfile.CoreHalfHeight
-		)
-		local RayOrigin = Vector3.new(PredictedPosition.X, RayOriginY, PredictedPosition.Z)
-		local RayDistance = math.max(
-			12,
-			RayOriginY - PredictedPosition.Y + AimProfile.BodyHeight + math.abs(VerticalOffset) + 4,
-			SpamJumpPredictionActive and TargetingSettings.SpamGroundRayDistance or 0
-		)
-		local GroundResult = workspace:Raycast(
-			RayOrigin,
-			Vector3.new(0, -RayDistance, 0),
-			PredictionGroundParameters
-		)
+		local RayOrigin = Vector3.new(PredictedPosition.X, Root.Position.Y + 0.5, PredictedPosition.Z)
+		local RayDistance = math.max(10, Humanoid.HipHeight + Root.Size.Y + 6)
+		local GroundResult = workspace:Raycast(RayOrigin, Vector3.new(0, -RayDistance, 0), PredictionGroundParameters)
 
 		if GroundResult then
-			local MinimumAimY = GroundResult.Position.Y + AimProfile.GroundToAimHeight
-
-			if SpamJumpPredictionActive then
-				local SpamPredictionTime = math.clamp(
-					ActivePrediction * TargetingSettings.SpamCyclePredictionScale,
-					TargetingSettings.SpamCycleMinimumTime,
-					TargetingSettings.SpamCycleMaximumTime
-				)
-				local SpamPredictedY = GetSpamJumpPredictedY(
-					AimProfile.AimPosition.Y,
-					MinimumAimY,
-					VerticalVelocity,
-					SpamPredictionTime,
-					Airborne,
-					TimeSinceLanding,
-					JumpState
-				)
-
-				if not Airborne
-					or VerticalVelocity <= TargetingSettings.SpamTimingVelocityThreshold then
-					local EarlyPredictionY = GetSpamJumpPredictedY(
-						AimProfile.AimPosition.Y,
-						MinimumAimY,
-						VerticalVelocity,
-						math.max(
-							SpamPredictionTime - TargetingSettings.SpamTimingWindow,
-							TargetingSettings.SpamCycleMinimumTime
-						),
-						Airborne,
-						TimeSinceLanding,
-						JumpState
-					)
-					local LatePredictionY = GetSpamJumpPredictedY(
-						AimProfile.AimPosition.Y,
-						MinimumAimY,
-						VerticalVelocity,
-						math.min(
-							SpamPredictionTime + TargetingSettings.SpamTimingWindow,
-							TargetingSettings.SpamCycleMaximumTime
-						),
-						Airborne,
-						TimeSinceLanding,
-						JumpState
-					)
-					local LowestPredictionY = math.min(
-						EarlyPredictionY,
-						SpamPredictedY,
-						LatePredictionY
-					)
-					local HighestPredictionY = math.max(
-						EarlyPredictionY,
-						SpamPredictedY,
-						LatePredictionY
-					)
-					local RangeCenterY = (LowestPredictionY + HighestPredictionY) * 0.5
-					local MotionRange = HighestPredictionY - LowestPredictionY
-					local SafeTorsoRange = AimProfile.CoreHalfHeight
-						* TargetingSettings.SpamTimingTorsoRangeScale
-					local TimingStrength = math.clamp(
-						MotionRange / math.max(SafeTorsoRange, 0.01),
-						TargetingSettings.SpamTimingMinimumStrength,
-						1
-					)
-
-					SpamPredictedY = SpamPredictedY
-						+ (RangeCenterY - SpamPredictedY) * TimingStrength
-						+ TargetingSettings.SpamTimingVerticalLift
-							* AimProfile.AvatarScale
-							* TimingStrength
-				end
-
-				SpamPredictedY = math.max(
-					SpamPredictedY - TargetingSettings.SpamAimLowering * AimProfile.AvatarScale,
-					MinimumAimY
-				)
-				local ActiveSpamBlend = math.clamp(
-					SpamJumpBlend * TargetingSettings.SpamCyclePredictionStrength,
-					0,
-					1
-				)
-				PredictedPosition = Vector3.new(
-					PredictedPosition.X,
-					PredictedPosition.Y
-						+ (SpamPredictedY - PredictedPosition.Y) * ActiveSpamBlend,
-					PredictedPosition.Z
-				)
-			end
+			local MinimumAimHeight = math.clamp(Humanoid.HipHeight + Root.Size.Y * 0.5, 2.5, 4)
+			local MinimumAimY = GroundResult.Position.Y + MinimumAimHeight
 
 			if PredictedPosition.Y < MinimumAimY then
 				PredictedPosition = Vector3.new(PredictedPosition.X, MinimumAimY, PredictedPosition.Z)
@@ -1734,51 +814,6 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 	end
 
 	return PredictedPosition
-end
-
-local function ResolveVisibleShotPosition(OriginPosition, TargetCharacter, AimPart, PredictedPosition)
-	if HasClearShot(OriginPosition, TargetCharacter, PredictedPosition) then
-		return PredictedPosition
-	end
-
-	local Root = TargetCharacter:FindFirstChild("HumanoidRootPart")
-	if not Root then
-		return nil
-	end
-
-	local AimProfile = GetAvatarAimProfile(TargetCharacter, Root, AimPart)
-	local MotionOffset = PredictedPosition - AimProfile.AimPosition
-	local SeenParts = {}
-
-	for _, PartName in ipairs(TargetingSettings.VisibleFallbackParts) do
-		local Part = TargetCharacter:FindFirstChild(PartName)
-
-		if Part and Part:IsA("BasePart") and not SeenParts[Part] then
-			SeenParts[Part] = true
-			local ProbeRatio = TargetingSettings.VisibleAimProbeRatio
-			local Center = Part.Position + MotionOffset
-			local RightOffset = Part.CFrame.RightVector * Part.Size.X * ProbeRatio
-			local UpOffset = Part.CFrame.UpVector * Part.Size.Y * ProbeRatio
-			local DepthOffset = Part.CFrame.LookVector * Part.Size.Z * ProbeRatio
-			local ProbePositions = {
-				Center,
-				Center + UpOffset,
-				Center - UpOffset,
-				Center + RightOffset,
-				Center - RightOffset,
-				Center + DepthOffset,
-				Center - DepthOffset
-			}
-
-			for _, ProbePosition in ipairs(ProbePositions) do
-				if HasClearShot(OriginPosition, TargetCharacter, ProbePosition) then
-					return ProbePosition
-				end
-			end
-		end
-	end
-
-	return nil
 end
 
 local function GetCharacterScreenDistance(Character, PointerPosition)
@@ -1825,40 +860,32 @@ local function GetCharacterScreenDistance(Character, PointerPosition)
 		math.clamp(PointerPosition.X, MinimumX, MaximumX),
 		math.clamp(PointerPosition.Y, MinimumY, MaximumY)
 	)
-	local ScreenCenter = Vector2.new(
-		(MinimumX + MaximumX) * 0.5,
-		(MinimumY + MaximumY) * 0.5
-	)
 
-	return (ClosestPoint - PointerPosition).Magnitude, (ScreenCenter - PointerPosition).Magnitude
+	return (ClosestPoint - PointerPosition).Magnitude
 end
 
-local function FindTargetNearPointer(PointerPosition, _)
+local function FindTargetNearPointer(PointerPosition, OriginPosition)
 	local BestPlayer
 	local BestAimPart
-	local BestScore = math.huge
+	local BestDistance = TargetRadius
 
 	for _, Player in ipairs(CachedPlayers) do
 		if Player ~= LocalPlayer and Player.Parent == Players then
 			local Character = Player.Character
 			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
 			local Root = Character and Character:FindFirstChild("HumanoidRootPart")
-			local AimPart = Character and GetPreferredAimPart(Character)
+			local AimPart = Character and (Character:FindFirstChild("Head") or Root)
 
 			if Humanoid and Humanoid.Health > 0 and Root and AimPart then
-				local ScreenDistance, CenterDistance = GetCharacterScreenDistance(Character, PointerPosition)
+				local ScreenDistance = GetCharacterScreenDistance(Character, PointerPosition)
 
-				if ScreenDistance and ScreenDistance <= TargetRadius then
-					local SelectionScore = ScreenDistance + CenterDistance * TargetingSettings.CenterWeight
+				if ScreenDistance and ScreenDistance <= BestDistance then
+					local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
 
-					if Player == CurrentTargetPlayer then
-						SelectionScore = SelectionScore - TargetingSettings.SwitchBias
-					end
-
-					if SelectionScore < BestScore then
+					if HasClearShot(OriginPosition, Character, PredictedPosition) then
 						BestPlayer = Player
 						BestAimPart = AimPart
-						BestScore = SelectionScore
+						BestDistance = ScreenDistance
 					end
 				end
 			end
@@ -2033,7 +1060,7 @@ local function TryAutoGrabGun()
 
 		local Success, ErrorMessage = pcall(function()
 			FireTouch(0)
-			task.wait(TargetingSettings.AutoGrabTouchDuration)
+			task.wait(AutoGrabTouchDuration)
 			FireTouch(1)
 		end)
 
@@ -2757,10 +1784,10 @@ local function GetCurrentMurderer()
 	return nil
 end
 
-local function FireResolvedTarget(_, _, TargetPlayer, AimPart)
+local function FireResolvedTarget(Shoot, OriginAttachment, TargetPlayer, AimPart)
 	local CurrentTime = os.clock()
 
-	if CurrentTime - LastShotTime < TargetingSettings.ClickDebounce then
+	if CurrentTime - LastShotTime < ClickDebounce then
 		return false
 	end
 
@@ -2769,8 +1796,14 @@ local function FireResolvedTarget(_, _, TargetPlayer, AimPart)
 		return false
 	end
 
+	local PredictedPosition = GetPredictedAimPosition(TargetCharacter, AimPart)
+	if not HasClearShot(OriginAttachment.WorldPosition, TargetCharacter, PredictedPosition) then
+		return false
+	end
+
 	LastShotTime = CurrentTime
-	task.spawn(ShootTargetWithMurdererLogic, TargetPlayer, "Targeting")
+	Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(PredictedPosition))
+	SetStatus("Shot sent to " .. TargetPlayer.DisplayName)
 	return true
 end
 
@@ -2779,28 +1812,28 @@ local function FireAtPointer(PointerPosition)
 		return
 	end
 
-	if os.clock() - LastShotTime < TargetingSettings.ClickDebounce then
+	if os.clock() - LastShotTime < ClickDebounce then
 		return
 	end
 
-	local _, Shoot, OriginAttachment = GetEquippedGun()
-	CurrentCamera = workspace.CurrentCamera or CurrentCamera
-	local OriginPosition = OriginAttachment and OriginAttachment.WorldPosition or CurrentCamera.CFrame.Position
+	local Gun, Shoot, OriginAttachment = GetEquippedGun()
+	if not Gun then
+		SetStatus("Equip Gun before clicking")
+		return
+	end
 
-	local TargetPlayer, AimPart = FindTargetNearPointer(PointerPosition, OriginPosition)
+	local TargetPlayer, AimPart = FindTargetNearPointer(PointerPosition, OriginAttachment.WorldPosition)
 	if not TargetPlayer or not AimPart then
-		SetStatus("No player touching the circle")
+		SetStatus("No visible player touching the circle")
 		return
 	end
 
 	FireResolvedTarget(Shoot, OriginAttachment, TargetPlayer, AimPart)
 end
 
-ShootTargetWithMurdererLogic = function(Murderer, ActionTitle)
-	ActionTitle = ActionTitle or "Targeting"
-
+local function ShootMurdererPrivilege()
 	if MurdererShotBusy or MurderAllBusy or AutoGrabGunBusy then
-		Window:Notify({ Title = ActionTitle, Content = "A shot is already in progress", Type = "Warning" })
+		Window:Notify({ Title = "Shoot Murderer", Content = "A shot is already in progress", Type = "Warning" })
 		return
 	end
 
@@ -2808,19 +1841,20 @@ ShootTargetWithMurdererLogic = function(Murderer, ActionTitle)
 		RunService.Heartbeat:Wait()
 
 		if SpectatorActionBusy then
-			Window:Notify({ Title = ActionTitle, Content = "Preview is busy; try again", Type = "Warning" })
+			Window:Notify({ Title = "Shoot Murderer", Content = "Preview is busy; try again", Type = "Warning" })
 			return
 		end
 	end
 
+	local Murderer = GetCurrentMurderer()
 	local MurdererCharacter = Murderer and Murderer.Character
 	local MurdererHumanoid = MurdererCharacter and MurdererCharacter:FindFirstChildOfClass("Humanoid")
 	local MurdererRoot = MurdererCharacter and MurdererCharacter:FindFirstChild("HumanoidRootPart")
-	local AimPart = MurdererCharacter and GetPreferredAimPart(MurdererCharacter)
+	local AimPart = MurdererCharacter and (MurdererCharacter:FindFirstChild("Head") or MurdererRoot)
 
 	if not Murderer or not MurdererHumanoid or MurdererHumanoid.Health <= 0 or not MurdererRoot or not AimPart then
-		Window:Notify({ Title = ActionTitle, Content = "The selected player is not ready", Type = "Error" })
-		SetStatus("Selected player is not ready")
+		Window:Notify({ Title = "Shoot Murderer", Content = "No living murderer was detected", Type = "Error" })
+		SetStatus("No living murderer detected")
 		return
 	end
 
@@ -2829,7 +1863,7 @@ ShootTargetWithMurdererLogic = function(Murderer, ActionTitle)
 	local Root = Character and Character:FindFirstChild("HumanoidRootPart")
 
 	if not Character or not Humanoid or Humanoid.Health <= 0 or not Root then
-		Window:Notify({ Title = ActionTitle, Content = "Your character is not ready", Type = "Error" })
+		Window:Notify({ Title = "Shoot Murderer", Content = "Your character is not ready", Type = "Error" })
 		SetStatus("Character is not ready")
 		return
 	end
@@ -2847,7 +1881,7 @@ ShootTargetWithMurdererLogic = function(Murderer, ActionTitle)
 			AutoEquippedGun = StoredGun
 			pcall(function()
 				Humanoid:EquipTool(StoredGun)
-				task.wait(TargetingSettings.StaffShotEquipDelay)
+				RunService.Heartbeat:Wait()
 			end)
 			Gun, Shoot, OriginAttachment = GetEquippedGun()
 			EquippedByScript = Gun == StoredGun
@@ -2860,14 +1894,13 @@ ShootTargetWithMurdererLogic = function(Murderer, ActionTitle)
 		end
 
 		MurdererShotBusy = false
-		Window:Notify({ Title = ActionTitle, Content = "No usable Gun is equipped or stored", Type = "Error" })
+		Window:Notify({ Title = "Shoot Murderer", Content = "No usable Gun is equipped or stored", Type = "Error" })
 		SetStatus("A usable Gun is required")
 		return
 	end
 
 	local OriginalPivot = Character:GetPivot()
 	local OriginalRootCFrame = Root.CFrame
-	local RootRelativeToPivot = OriginalPivot:ToObjectSpace(OriginalRootCFrame)
 	local OriginalLinearVelocity = Root.AssemblyLinearVelocity
 	local OriginalAngularVelocity = Root.AssemblyAngularVelocity
 	local OriginalAutoRotate = Humanoid.AutoRotate
@@ -2893,248 +1926,30 @@ ShootTargetWithMurdererLogic = function(Murderer, ActionTitle)
 	Humanoid.Sit = false
 	Humanoid.PlatformStand = false
 	local Success, ErrorMessage = pcall(function()
-		local PlacementRaycastParameters = RaycastParams.new()
-		PlacementRaycastParameters.FilterType = Enum.RaycastFilterType.Exclude
-		PlacementRaycastParameters.FilterDescendantsInstances = { Character, MurdererCharacter }
-		PlacementRaycastParameters.IgnoreWater = true
-		local TargetSurfaceRaycastParameters = RaycastParams.new()
-		TargetSurfaceRaycastParameters.FilterType = Enum.RaycastFilterType.Include
-		TargetSurfaceRaycastParameters.IgnoreWater = true
+		local PredictedPosition = GetPredictedAimPosition(MurdererCharacter, AimPart)
+		local AbovePosition = MurdererRoot.Position + Vector3.new(0, StaffShotHeight, 0)
+		local FlatLookPosition = Vector3.new(PredictedPosition.X, AbovePosition.Y, PredictedPosition.Z)
 
-		local MuzzleCFrameOffset = Root.CFrame:ToObjectSpace(OriginAttachment.WorldCFrame)
-		local MuzzleOffset = MuzzleCFrameOffset.Position
-
-		local function ResolveStaffAimPosition()
-			local CurrentRoot = MurdererCharacter:FindFirstChild("HumanoidRootPart")
-			local CurrentHumanoid = MurdererCharacter:FindFirstChildOfClass("Humanoid")
-			local CurrentAimPart = GetPreferredAimPart(MurdererCharacter)
-
-			if not CurrentRoot
-				or not CurrentHumanoid
-				or CurrentHumanoid.Health <= 0
-				or not CurrentAimPart then
-				error("The murderer moved or died before the shot")
-			end
-
-			local AimProfile = GetAvatarAimProfile(MurdererCharacter, CurrentRoot, CurrentAimPart)
-			local RawVelocity = CurrentRoot.AssemblyLinearVelocity
-			local HorizontalVelocity = Vector3.new(RawVelocity.X, 0, RawVelocity.Z)
-
-			if HorizontalVelocity.Magnitude > TargetingSettings.MaximumHorizontalSpeed then
-				HorizontalVelocity = HorizontalVelocity.Unit * TargetingSettings.MaximumHorizontalSpeed
-			end
-
-			local MoveDirection = Vector3.new(CurrentHumanoid.MoveDirection.X, 0, CurrentHumanoid.MoveDirection.Z)
-
-			if MoveDirection.Magnitude > 0.01 then
-				local IntendedVelocity = MoveDirection.Unit
-					* math.min(CurrentHumanoid.WalkSpeed, TargetingSettings.MaximumHorizontalSpeed)
-				HorizontalVelocity = HorizontalVelocity:Lerp(
-					IntendedVelocity,
-					TargetingSettings.StaffShotHorizontalIntentBlend
-				)
-			end
-
-			GetPingPredictionOffset()
-			local LeadTime = math.clamp(
-				TargetingSettings.StaffShotBaseLead
-					+ (SmoothedNetworkPing or 0) * TargetingSettings.StaffShotPingLeadScale,
-				0,
-				TargetingSettings.StaffShotMaximumLeadTime
-			)
-			local HorizontalOffset = HorizontalVelocity * LeadTime
-			local HorizontalLeadLimit = math.clamp(
-				AimProfile.CoreHorizontalRadius * TargetingSettings.StaffShotHorizontalLeadRadiusScale,
-				TargetingSettings.StaffShotMinimumHorizontalLeadLimit,
-				TargetingSettings.StaffShotMaximumHorizontalLeadLimit
-			)
-
-			if HorizontalOffset.Magnitude > HorizontalLeadLimit then
-				HorizontalOffset = HorizontalOffset.Unit * HorizontalLeadLimit
-			end
-
-			local State = CurrentHumanoid:GetState()
-			local Airborne = State == Enum.HumanoidStateType.Jumping
-				or State == Enum.HumanoidStateType.Freefall
-				or CurrentHumanoid.FloorMaterial == Enum.Material.Air
-			local VerticalVelocity = math.clamp(
-				RawVelocity.Y,
-				-TargetingSettings.MaximumVerticalSpeed,
-				TargetingSettings.MaximumVerticalSpeed
-			)
-
-			if not Airborne and VerticalVelocity < TargetingSettings.JumpRiseThreshold then
-				VerticalVelocity = 0
-			end
-
-			local VerticalLeadTime = LeadTime * TargetingSettings.StaffShotVerticalLeadScale
-			local VerticalOffset = VerticalVelocity * VerticalLeadTime
-				- 0.5 * workspace.Gravity * VerticalLeadTime * VerticalLeadTime
-			local VerticalLeadLimit = math.min(
-				TargetingSettings.StaffShotMaximumVerticalLead,
-				math.max(AimProfile.BodyHeight * 0.42, AimProfile.CoreHalfHeight * 1.3, 0.75)
-			)
-			VerticalOffset = math.clamp(VerticalOffset, -VerticalLeadLimit, VerticalLeadLimit)
-
-			local PredictedPosition = AimProfile.AimPosition
-				+ HorizontalOffset
-				+ Vector3.new(0, VerticalOffset, 0)
-			local GroundRayOrigin = CurrentRoot.Position
-				+ Vector3.new(0, AimProfile.BodyHeight * 0.5, 0)
-			local GroundResult = workspace:Raycast(
-				GroundRayOrigin,
-				Vector3.new(0, -(AimProfile.BodyHeight + 8), 0),
-				PlacementRaycastParameters
-			)
-
-			if GroundResult then
-				local MinimumAimY = GroundResult.Position.Y + AimProfile.GroundToAimHeight
-
-				if PredictedPosition.Y < MinimumAimY then
-					PredictedPosition = Vector3.new(PredictedPosition.X, MinimumAimY, PredictedPosition.Z)
-				end
-			end
-
-			return CurrentRoot, CurrentAimPart, AimProfile, PredictedPosition, HorizontalVelocity
+		if (FlatLookPosition - AbovePosition).Magnitude < 0.01 then
+			FlatLookPosition = AbovePosition + Vector3.new(OriginalRootCFrame.LookVector.X, 0, OriginalRootCFrame.LookVector.Z)
 		end
 
-		local function ResolveStaffShotCFrame(CurrentRoot, CurrentAimPart, AimProfile, HorizontalVelocity)
-			local FacingDirection = Vector3.new(
-				CurrentRoot.CFrame.LookVector.X,
-				0,
-				CurrentRoot.CFrame.LookVector.Z
-			)
-
-			if FacingDirection.Magnitude < 0.01 then
-				FacingDirection = Vector3.new(
-					OriginalRootCFrame.LookVector.X,
-					0,
-					OriginalRootCFrame.LookVector.Z
-				)
-			end
-
-			FacingDirection = FacingDirection.Magnitude > 0.01
-				and FacingDirection.Unit
-				or Vector3.new(0, 0, -1)
-
-			local PrimaryBackDirection = HorizontalVelocity.Magnitude
-				>= TargetingSettings.StaffShotMovementAlignmentSpeed
-				and -HorizontalVelocity.Unit
-				or -FacingDirection
-			local SideDirection = Vector3.new(
-				-PrimaryBackDirection.Z,
-				0,
-				PrimaryBackDirection.X
-			)
-			local DiagonalWeight = TargetingSettings.StaffShotDiagonalWeight
-			local CandidateDirections = {
-				PrimaryBackDirection,
-				(PrimaryBackDirection + SideDirection * DiagonalWeight).Unit,
-				(PrimaryBackDirection - SideDirection * DiagonalWeight).Unit,
-				SideDirection,
-				-SideDirection,
-				-PrimaryBackDirection
-			}
-			local MuzzleClearance = math.clamp(
-				AimProfile.CoreHorizontalRadius + TargetingSettings.StaffShotMuzzleSurfaceGap,
-				TargetingSettings.StaffShotMinimumMuzzleClearance,
-				TargetingSettings.StaffShotMaximumMuzzleClearance
-			)
-
-			for _, CandidateDirection in ipairs(CandidateDirections) do
-				TargetSurfaceRaycastParameters.FilterDescendantsInstances = { CurrentAimPart }
-				local SurfaceProbeOrigin = CurrentAimPart.Position
-					+ CandidateDirection * TargetingSettings.StaffShotSurfaceProbeDistance
-				local SurfaceResult = workspace:Raycast(
-					SurfaceProbeOrigin,
-					CurrentAimPart.Position - SurfaceProbeOrigin,
-					TargetSurfaceRaycastParameters
-				)
-				local DesiredMuzzlePosition = SurfaceResult
-					and SurfaceResult.Position
-						+ CandidateDirection * TargetingSettings.StaffShotMuzzleSurfaceGap
-					or AimProfile.AimPosition + CandidateDirection * MuzzleClearance
-				local LookDirection = -CandidateDirection
-				local RotationCFrame = CFrame.lookAt(
-					Vector3.zero,
-					LookDirection,
-					Vector3.yAxis
-				)
-				local RotatedMuzzleOffset = RotationCFrame:VectorToWorldSpace(MuzzleOffset)
-				local CandidateRootPosition = DesiredMuzzlePosition - RotatedMuzzleOffset
-				local CandidateCFrame = CFrame.new(CandidateRootPosition) * RotationCFrame.Rotation
-				local MuzzleCorridorResult = workspace:Raycast(
-					AimProfile.AimPosition,
-					DesiredMuzzlePosition - AimProfile.AimPosition,
-					PlacementRaycastParameters
-				)
-				local RootCorridorResult = workspace:Raycast(
-					CurrentRoot.Position,
-					CandidateRootPosition - CurrentRoot.Position,
-					PlacementRaycastParameters
-				)
-				local CandidateMuzzlePosition = CandidateCFrame:PointToWorldSpace(MuzzleOffset)
-
-				if not MuzzleCorridorResult
-					and not RootCorridorResult
-					and HasClearShot(
-						CandidateMuzzlePosition,
-						MurdererCharacter,
-						AimProfile.AimPosition
-					) then
-					return CandidateCFrame
-				end
-			end
-
-			TargetSurfaceRaycastParameters.FilterDescendantsInstances = { CurrentAimPart }
-			local FallbackProbeOrigin = CurrentAimPart.Position
-				+ Vector3.new(0, TargetingSettings.StaffShotSurfaceProbeDistance, 0)
-			local FallbackSurfaceResult = workspace:Raycast(
-				FallbackProbeOrigin,
-				CurrentAimPart.Position - FallbackProbeOrigin,
-				TargetSurfaceRaycastParameters
-			)
-			local FallbackMuzzlePosition = FallbackSurfaceResult
-				and FallbackSurfaceResult.Position
-					+ Vector3.new(0, TargetingSettings.StaffShotMuzzleSurfaceGap, 0)
-				or AimProfile.AimPosition + Vector3.new(0, MuzzleClearance + 0.75, 0)
-			local FallbackRotation = CFrame.lookAt(
-				Vector3.zero,
-				-PrimaryBackDirection,
-				Vector3.yAxis
-			)
-			local FallbackRootPosition = FallbackMuzzlePosition
-				- FallbackRotation:VectorToWorldSpace(MuzzleOffset)
-
-			return CFrame.new(FallbackRootPosition) * FallbackRotation.Rotation
-		end
-
-		local CurrentRoot, CurrentAimPart, AimProfile, PredictedPosition, HorizontalVelocity =
-			ResolveStaffAimPosition()
-		local DesiredRootCFrame = ResolveStaffShotCFrame(
-			CurrentRoot,
-			CurrentAimPart,
-			AimProfile,
-			HorizontalVelocity
-		)
-		local DesiredCharacterPivot = DesiredRootCFrame * RootRelativeToPivot:Inverse()
-		local ShotOriginCFrame = DesiredRootCFrame * MuzzleCFrameOffset
-		local ShotOrigin = ShotOriginCFrame.Position
-		local ShotVector = PredictedPosition - ShotOrigin
-
-		if ShotVector.Magnitude < 0.01 then
-			error("The gun ray started too close to the aim point")
-		end
-
-		local ExtendedShotPosition = ShotOrigin
-			+ ShotVector.Unit * TargetingSettings.StaffShotRayLength
-		Shoot:FireServer(ShotOriginCFrame, CFrame.new(ExtendedShotPosition))
-		task.wait(TargetingSettings.StaffShotShotToTeleportDelay)
-
-		Character:PivotTo(DesiredCharacterPivot)
+		Character:PivotTo(CFrame.lookAt(AbovePosition, FlatLookPosition))
 		Root.AssemblyLinearVelocity = Vector3.zero
 		Root.AssemblyAngularVelocity = Vector3.zero
-		task.wait(TargetingSettings.StaffShotTeleportHold)
+		RunService.Heartbeat:Wait()
+
+		PredictedPosition = GetPredictedAimPosition(MurdererCharacter, AimPart)
+		AbovePosition = MurdererRoot.Position + Vector3.new(0, StaffShotHeight, 0)
+		FlatLookPosition = Vector3.new(PredictedPosition.X, AbovePosition.Y, PredictedPosition.Z)
+
+		if (FlatLookPosition - AbovePosition).Magnitude < 0.01 then
+			FlatLookPosition = AbovePosition + Vector3.new(OriginalRootCFrame.LookVector.X, 0, OriginalRootCFrame.LookVector.Z)
+		end
+
+		Character:PivotTo(CFrame.lookAt(AbovePosition, FlatLookPosition))
+		Shoot:FireServer(OriginAttachment.WorldCFrame, CFrame.new(PredictedPosition))
+		RunService.Heartbeat:Wait()
 	end)
 
 	if not PreviewSyncCFrame and Character.Parent and Root.Parent then
@@ -3180,28 +1995,16 @@ ShootTargetWithMurdererLogic = function(Murderer, ActionTitle)
 
 	if Success then
 		LastShotTime = os.clock()
-		SetStatus("Close-range shot sent to " .. Murderer.DisplayName)
+		SetStatus("Shot sent to " .. Murderer.DisplayName .. " with adaptive prediction")
 		Window:Notify({
-			Title = ActionTitle,
+			Title = "Shoot Murderer",
 			Content = "Shot sent to " .. Murderer.DisplayName .. " and position restored",
 			Type = "Success"
 		})
 	else
 		SetStatus("Shot failed; position was restored")
-		Window:Notify({ Title = ActionTitle, Content = tostring(ErrorMessage), Type = "Error" })
+		Window:Notify({ Title = "Shoot Murderer", Content = tostring(ErrorMessage), Type = "Error" })
 	end
-end
-
-local function ShootMurdererPrivilege()
-	local Murderer = GetCurrentMurderer()
-
-	if not Murderer then
-		Window:Notify({ Title = "Shoot Murderer", Content = "No living murderer was detected", Type = "Error" })
-		SetStatus("No living murderer detected")
-		return
-	end
-
-	ShootTargetWithMurdererLogic(Murderer, "Shoot Murderer")
 end
 
 local function MurderAllPlayers()
@@ -3349,8 +2152,8 @@ RoleVisualsControl = TargetingSection:AddToggle({
 TargetingSection:AddSlider({
 	Name = "Prediction",
 	Flag = "Prediction",
-	Minimum = TargetingSettings.Minimum,
-	Maximum = TargetingSettings.Maximum,
+	Minimum = MinimumPrediction,
+	Maximum = MaximumPrediction,
 	Increment = 0.01,
 	Default = PredictionTime,
 	Suffix = "s",
@@ -3569,7 +2372,7 @@ Track(RunService.RenderStepped:Connect(function(DeltaTime)
 	UpdateSpectator(DeltaTime)
 	AutoGrabGunAccumulator = AutoGrabGunAccumulator + DeltaTime
 
-	if AutoGrabGunEnabled and AutoGrabGunAccumulator >= TargetingSettings.AutoGrabInterval then
+	if AutoGrabGunEnabled and AutoGrabGunAccumulator >= AutoGrabGunInterval then
 		AutoGrabGunAccumulator = 0
 		TryAutoGrabGun()
 	end
@@ -3590,7 +2393,7 @@ Track(RunService.RenderStepped:Connect(function(DeltaTime)
 
 	RoleRefreshAccumulator = RoleRefreshAccumulator + DeltaTime
 
-	if RoleRefreshAccumulator >= TargetingSettings.RoleRefreshInterval then
+	if RoleRefreshAccumulator >= RoleRefreshInterval then
 		RoleRefreshAccumulator = 0
 		RefreshRoleVisuals()
 	end
