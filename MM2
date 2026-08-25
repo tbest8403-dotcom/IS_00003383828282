@@ -20,27 +20,53 @@ local SpectatorDepth = 20
 local SpectatorTransparency = 0.55
 local SpectatorMoveSpeed = 22
 local SpectatorVerticalSpeed = 18
-local PredictionTime = 0.15
-local MinimumPrediction = 0
-local MaximumPrediction = 0.5
-local MaximumHorizontalVelocity = 110
-local MaximumVerticalVelocity = 125
-local PredictionVelocitySmoothing = 16
-local PredictionWalkSpeedMultiplier = 1.75
-local PredictionAimPartBias = 0.62
-local VerticalPredictionMultiplier = 0.62
-local RisingPredictionMultiplier = 0.22
-local FallingPredictionMultiplier = 0.8
-local VerticalPredictionDeadzone = 5
-local VerticalGravityMultiplier = 0.55
-local MaximumRisingPredictionOffset = 1.1
-local PingPredictionWeight = 0.5
-local VerticalPingInfluence = 0.05
-local MaximumPingPrediction = 0.12
-local MaximumTotalPrediction = 0.6
-local PingUpdateInterval = 0.25
-local PingSmoothingAlpha = 0.18
-local ClosingSpeedThreshold = 1
+local JumpPredictor = {
+	Time = 0.15,
+	Minimum = 0,
+	Maximum = 0.5,
+	MaximumHorizontalVelocity = 110,
+	MaximumVerticalVelocity = 125,
+	VelocitySmoothing = 16,
+	WalkSpeedMultiplier = 1.75,
+	PingWeight = 0.5,
+	MaximumPing = 0.12,
+	MaximumTotal = 0.6,
+	PingUpdateInterval = 0.25,
+	PingSmoothingAlpha = 0.18,
+	ClosingSpeedThreshold = 1,
+	SmoothedPing = nil,
+	LastPingUpdate = 0,
+	VerticalDeadzone = 5,
+	SimulationSamples = 7,
+	BaseSpread = 0.035,
+	PingSpread = 0.45,
+	MaximumSpread = 0.075,
+	BodyMargin = 0.12,
+	LandingDelay = 0.025,
+	RepeatWindow = 0.16,
+	RepeatThreshold = 0.48,
+	MaximumVerticalOffset = 24,
+	GroundProbeDistance = 36,
+	SampleInterval = 1 / 30,
+	SampleMaximumDistance = 400,
+	SampleAccumulator = 0,
+	Samples = setmetatable({}, { __mode = "k" }),
+	BodyPartNames = {
+		"LowerTorso",
+		"UpperTorso",
+		"Torso",
+		"Head",
+		"HumanoidRootPart"
+	},
+	GroundPartNames = {
+		"LeftFoot",
+		"RightFoot",
+		"LeftLowerLeg",
+		"RightLowerLeg",
+		"Left Leg",
+		"Right Leg"
+	}
+}
 local ClickDebounce = 0.08
 local StaffShotHeight = 8
 local AutoGrabGunInterval = 0.12
@@ -48,8 +74,6 @@ local AutoGrabTouchDuration = 0.05
 local RoleRefreshInterval = 0.2
 local LastShotTime = 0
 local AutoGrabGunAccumulator = 0
-local SmoothedNetworkPing
-local LastNetworkPingUpdate = 0
 local LastTouchPosition = Vector2.new(CurrentCamera.ViewportSize.X / 2, CurrentCamera.ViewportSize.Y / 2)
 local SpectatorRenderBindingName = "_MXStaffSpectator_" .. tostring(LocalPlayer.UserId)
 local SpectatorFinalBindingName = SpectatorRenderBindingName .. "_Final"
@@ -208,7 +232,6 @@ local Connections = {}
 local CachedPlayers = Players:GetPlayers()
 local CharacterPartCache = setmetatable({}, { __mode = "k" })
 local OriginalManualActivation = setmetatable({}, { __mode = "k" })
-local PredictionVelocitySamples = setmetatable({}, { __mode = "k" })
 local RoleHighlights = {}
 local GunDropHighlight
 local PlayerRoles = {}
@@ -653,49 +676,178 @@ end
 local function GetPingPredictionOffset()
 	local CurrentTime = os.clock()
 
-	if CurrentTime - LastNetworkPingUpdate >= PingUpdateInterval then
-		LastNetworkPingUpdate = CurrentTime
+	if CurrentTime - JumpPredictor.LastPingUpdate >= JumpPredictor.PingUpdateInterval then
+		JumpPredictor.LastPingUpdate = CurrentTime
 
 		local Success, NetworkPing = pcall(function()
 			return LocalPlayer:GetNetworkPing()
 		end)
 
 		if Success and type(NetworkPing) == "number" and NetworkPing == NetworkPing and NetworkPing >= 0 then
-			NetworkPing = math.clamp(NetworkPing, 0, MaximumPingPrediction / PingPredictionWeight)
+			NetworkPing = math.clamp(NetworkPing, 0, JumpPredictor.MaximumPing / JumpPredictor.PingWeight)
 
-			if SmoothedNetworkPing then
-				SmoothedNetworkPing = SmoothedNetworkPing
-					+ (NetworkPing - SmoothedNetworkPing) * PingSmoothingAlpha
+			if JumpPredictor.SmoothedPing then
+				JumpPredictor.SmoothedPing = JumpPredictor.SmoothedPing
+					+ (NetworkPing - JumpPredictor.SmoothedPing) * JumpPredictor.PingSmoothingAlpha
 			else
-				SmoothedNetworkPing = NetworkPing
+				JumpPredictor.SmoothedPing = NetworkPing
 			end
 		end
 	end
 
-	return math.clamp((SmoothedNetworkPing or 0) * PingPredictionWeight, 0, MaximumPingPrediction)
+	return math.clamp(
+		(JumpPredictor.SmoothedPing or 0) * JumpPredictor.PingWeight,
+		0,
+		JumpPredictor.MaximumPing
+	)
 end
 
-local function GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
-	local CurrentTime = os.clock()
-	local RawVelocity = Root.AssemblyLinearVelocity
-	local Sample = PredictionVelocitySamples[TargetCharacter]
-	local FilteredVelocity = RawVelocity
+function JumpPredictor.GetPreferredAimPart(Character)
+	for _, PartName in ipairs({ "UpperTorso", "Torso", "LowerTorso", "HumanoidRootPart", "Head" }) do
+		local Part = Character:FindFirstChild(PartName)
 
-	if Sample and CurrentTime - Sample.Time <= 0.35 then
-		local DeltaTime = math.clamp(CurrentTime - Sample.Time, 0, 0.1)
-		local Alpha = 1 - math.exp(-PredictionVelocitySmoothing * DeltaTime)
-		FilteredVelocity = Sample.Velocity:Lerp(RawVelocity, Alpha)
+		if Part and Part:IsA("BasePart") and Part.CanQuery then
+			return Part
+		end
 	end
 
-	PredictionVelocitySamples[TargetCharacter] = {
-		Velocity = FilteredVelocity,
-		Time = CurrentTime
-	}
+	for _, PartName in ipairs({ "UpperTorso", "Torso", "LowerTorso", "HumanoidRootPart", "Head" }) do
+		local Part = Character:FindFirstChild(PartName)
+
+		if Part and Part:IsA("BasePart") then
+			return Part
+		end
+	end
+
+	return nil
+end
+
+function JumpPredictor.GetVerticalPartExtent(Part)
+	local HalfSize = Part.Size * 0.5
+	local PartCFrame = Part.CFrame
+
+	return math.abs(PartCFrame.RightVector.Y) * HalfSize.X
+		+ math.abs(PartCFrame.UpVector.Y) * HalfSize.Y
+		+ math.abs(PartCFrame.LookVector.Y) * HalfSize.Z
+end
+
+function JumpPredictor.GetBodyVerticalCorridor(TargetCharacter, AimPart)
+	local MinimumY = math.huge
+	local MaximumY = -math.huge
+
+	for _, PartName in ipairs(JumpPredictor.BodyPartNames) do
+		local Part = TargetCharacter:FindFirstChild(PartName)
+
+		if Part and Part:IsA("BasePart") and Part.CanQuery then
+			local Extent = JumpPredictor.GetVerticalPartExtent(Part)
+			MinimumY = math.min(MinimumY, Part.Position.Y - Extent)
+			MaximumY = math.max(MaximumY, Part.Position.Y + Extent)
+		end
+	end
+
+	if MinimumY == math.huge then
+		local Extent = JumpPredictor.GetVerticalPartExtent(AimPart)
+		MinimumY = AimPart.Position.Y - Extent
+		MaximumY = AimPart.Position.Y + Extent
+	end
+
+	local CorridorHeight = math.max(MaximumY - MinimumY, 0.2)
+	local Margin = math.min(JumpPredictor.BodyMargin, CorridorHeight * 0.15)
+
+	return MinimumY + Margin - AimPart.Position.Y,
+		MaximumY - Margin - AimPart.Position.Y
+end
+
+function JumpPredictor.IsAirborne(Humanoid)
+	local State = Humanoid:GetState()
+
+	if State == Enum.HumanoidStateType.Swimming
+		or State == Enum.HumanoidStateType.Climbing
+		or State == Enum.HumanoidStateType.Seated then
+		return false
+	end
+
+	return State == Enum.HumanoidStateType.Jumping
+		or State == Enum.HumanoidStateType.Freefall
+		or Humanoid.FloorMaterial == Enum.Material.Air
+end
+
+function JumpPredictor.GetExpectedJumpVelocity(Humanoid)
+	if Humanoid.UseJumpPower then
+		return math.clamp(Humanoid.JumpPower, 0, JumpPredictor.MaximumVerticalVelocity)
+	end
+
+	return math.clamp(
+		math.sqrt(2 * math.max(workspace.Gravity, 1) * math.max(Humanoid.JumpHeight, 0)),
+		0,
+		JumpPredictor.MaximumVerticalVelocity
+	)
+end
+
+function JumpPredictor.GetFilteredVelocity(TargetCharacter, Root, Humanoid)
+	local CurrentTime = os.clock()
+	local RawVelocity = Root.AssemblyLinearVelocity
+	local Sample = JumpPredictor.Samples[TargetCharacter]
+	local FilteredVelocity = RawVelocity
+	local Airborne = JumpPredictor.IsAirborne(Humanoid)
+	local DeltaTime = 0
+
+	if Sample and CurrentTime - Sample.Time <= 0.35 then
+		DeltaTime = math.clamp(CurrentTime - Sample.Time, 0, 0.1)
+		local Alpha = 1 - math.exp(-JumpPredictor.VelocitySmoothing * DeltaTime)
+		FilteredVelocity = Sample.Velocity:Lerp(RawVelocity, Alpha)
+	else
+		Sample = nil
+	end
+
+	if not Sample then
+		Sample = {
+			SpamJumpConfidence = 0,
+			JumpVelocityEstimate = JumpPredictor.GetExpectedJumpVelocity(Humanoid)
+		}
+
+		if Airborne then
+			Sample.LastTakeoffTime = CurrentTime
+		end
+	elseif Sample.Airborne ~= Airborne then
+		if Airborne then
+			local TimeSinceLanding = Sample.LastLandingTime
+				and CurrentTime - Sample.LastLandingTime
+
+			if TimeSinceLanding and TimeSinceLanding <= JumpPredictor.RepeatWindow then
+				Sample.SpamJumpConfidence = math.clamp(
+					(Sample.SpamJumpConfidence or 0) * 0.6 + 0.58,
+					0,
+					1
+				)
+			else
+				Sample.SpamJumpConfidence = (Sample.SpamJumpConfidence or 0) * 0.45
+			end
+
+			Sample.LastTakeoffTime = CurrentTime
+			Sample.JumpVelocityEstimate = math.max(JumpPredictor.GetExpectedJumpVelocity(Humanoid), RawVelocity.Y)
+		else
+			Sample.LastLandingTime = CurrentTime
+		end
+	end
+
+	if Airborne and RawVelocity.Y > JumpPredictor.VerticalDeadzone then
+		Sample.JumpVelocityEstimate = math.max(Sample.JumpVelocityEstimate or 0, RawVelocity.Y)
+	elseif not Airborne and DeltaTime > 0 and Sample.LastLandingTime
+		and CurrentTime - Sample.LastLandingTime > 0.3 then
+		Sample.SpamJumpConfidence = (Sample.SpamJumpConfidence or 0) * math.exp(-2.5 * DeltaTime)
+	end
+
+	Sample.Velocity = FilteredVelocity
+	Sample.RawVelocity = RawVelocity
+	Sample.Time = CurrentTime
+	Sample.Airborne = Airborne
+	JumpPredictor.Samples[TargetCharacter] = Sample
 
 	local HorizontalVelocity = Vector3.new(FilteredVelocity.X, 0, FilteredVelocity.Z)
 	local HorizontalLimit = math.min(
-		MaximumHorizontalVelocity,
-		math.max(20, Humanoid.WalkSpeed * PredictionWalkSpeedMultiplier)
+		JumpPredictor.MaximumHorizontalVelocity,
+		math.max(20, Humanoid.WalkSpeed * JumpPredictor.WalkSpeedMultiplier)
 	)
 
 	if HorizontalVelocity.Magnitude > HorizontalLimit then
@@ -704,69 +856,389 @@ local function GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
 		HorizontalVelocity = Vector3.zero
 	end
 
-	return HorizontalVelocity, RawVelocity.Y
+	local VerticalVelocity = Airborne
+		and math.clamp(
+			RawVelocity.Y,
+			-JumpPredictor.MaximumVerticalVelocity,
+			JumpPredictor.MaximumVerticalVelocity
+		)
+		or 0
+
+	return HorizontalVelocity, VerticalVelocity, Airborne, Sample
 end
 
-local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverride)
+function JumpPredictor.SampleNearbyMotion()
+	local LocalCharacter = LocalPlayer.Character
+	local LocalRoot = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
+
+	if not LocalRoot then
+		return
+	end
+
+	for _, Player in ipairs(CachedPlayers) do
+		if Player ~= LocalPlayer and Player.Parent == Players then
+			local Character = Player.Character
+			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+			local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+			if Humanoid and Humanoid.Health > 0 and Root
+				and (Root.Position - LocalRoot.Position).Magnitude <= JumpPredictor.SampleMaximumDistance then
+				JumpPredictor.GetFilteredVelocity(Character, Root, Humanoid)
+			end
+		end
+	end
+end
+
+function JumpPredictor.GetRootGroundClearance(TargetCharacter, Root, Humanoid)
+	local MinimumY = math.huge
+
+	for _, PartName in ipairs(JumpPredictor.GroundPartNames) do
+		local Part = TargetCharacter:FindFirstChild(PartName)
+
+		if Part and Part:IsA("BasePart") then
+			MinimumY = math.min(MinimumY, Part.Position.Y - JumpPredictor.GetVerticalPartExtent(Part))
+		end
+	end
+
+	local HumanoidClearance = Humanoid.HipHeight + Root.Size.Y * 0.5
+
+	if MinimumY == math.huge then
+		return math.clamp(HumanoidClearance, 1, 6)
+	end
+
+	return math.clamp(math.max(HumanoidClearance, Root.Position.Y - MinimumY), 1, 6)
+end
+
+function JumpPredictor.GetPredictedGroundRootY(TargetCharacter, Root, Humanoid, FutureRootPosition)
+	local LocalCharacter = LocalPlayer.Character
+	PredictionGroundParameters.FilterDescendantsInstances = LocalCharacter
+		and { TargetCharacter, LocalCharacter }
+		or { TargetCharacter }
+
+	local RayOrigin = Vector3.new(FutureRootPosition.X, Root.Position.Y + 2, FutureRootPosition.Z)
+	local GroundResult = workspace:Raycast(
+		RayOrigin,
+		Vector3.new(0, -JumpPredictor.GroundProbeDistance, 0),
+		PredictionGroundParameters
+	)
+
+	if not GroundResult or GroundResult.Normal.Y < 0.3 then
+		return nil
+	end
+
+	local GroundRootY = GroundResult.Position.Y
+		+ JumpPredictor.GetRootGroundClearance(TargetCharacter, Root, Humanoid)
+
+	if GroundRootY > Root.Position.Y + 0.75 then
+		return nil
+	end
+
+	return GroundRootY
+end
+
+function JumpPredictor.GetRepeatConfidence(Humanoid, MotionSample)
+	local Confidence = MotionSample.SpamJumpConfidence or 0
+
+	if Humanoid.Jump then
+		Confidence = math.max(Confidence, 0.82)
+	end
+
+	return math.clamp(Confidence, 0, 1)
+end
+
+function JumpPredictor.SimulateVerticalOffset(
+	Root,
+	Humanoid,
+	MotionSample,
+	Airborne,
+	VerticalVelocity,
+	PredictionDuration,
+	GroundRootY,
+	RepeatJump
+)
+	local Gravity = math.max(workspace.Gravity, 1)
+	local JumpVelocity = math.clamp(
+		MotionSample.JumpVelocityEstimate or JumpPredictor.GetExpectedJumpVelocity(Humanoid),
+		0,
+		JumpPredictor.MaximumVerticalVelocity
+	)
+
+	if not Airborne then
+		if not RepeatJump then
+			return 0
+		end
+
+		local StartDelay = Humanoid.Jump and 0 or JumpPredictor.LandingDelay
+		local RemainingTime = PredictionDuration - StartDelay
+
+		if RemainingTime <= 0 then
+			return 0
+		end
+
+		local JumpOffset = JumpVelocity * RemainingTime
+			- 0.5 * Gravity * RemainingTime * RemainingTime
+
+		return math.clamp(JumpOffset, 0, JumpPredictor.MaximumVerticalOffset)
+	end
+
+	local FreeOffset = VerticalVelocity * PredictionDuration
+		- 0.5 * Gravity * PredictionDuration * PredictionDuration
+
+	if GroundRootY then
+		local GroundOffset = GroundRootY - Root.Position.Y
+		local Discriminant = VerticalVelocity * VerticalVelocity - 2 * Gravity * GroundOffset
+
+		if Discriminant >= 0 then
+			local LandingTime = (VerticalVelocity + math.sqrt(Discriminant)) / Gravity
+
+			if LandingTime >= 0 and LandingTime <= PredictionDuration then
+				if not RepeatJump then
+					return math.clamp(
+						GroundOffset,
+						-JumpPredictor.MaximumVerticalOffset,
+						JumpPredictor.MaximumVerticalOffset
+					)
+				end
+
+				local RemainingTime = PredictionDuration - LandingTime - JumpPredictor.LandingDelay
+
+				if RemainingTime <= 0 then
+					return math.clamp(
+						GroundOffset,
+						-JumpPredictor.MaximumVerticalOffset,
+						JumpPredictor.MaximumVerticalOffset
+					)
+				end
+
+				local RejumpOffset = JumpVelocity * RemainingTime
+					- 0.5 * Gravity * RemainingTime * RemainingTime
+
+				return math.clamp(
+					GroundOffset + math.max(RejumpOffset, 0),
+					-JumpPredictor.MaximumVerticalOffset,
+					JumpPredictor.MaximumVerticalOffset
+				)
+			end
+		end
+	end
+
+	return math.clamp(
+		FreeOffset,
+		-JumpPredictor.MaximumVerticalOffset,
+		JumpPredictor.MaximumVerticalOffset
+	)
+end
+
+function JumpPredictor.BuildTrajectoryBank(
+	Root,
+	Humanoid,
+	MotionSample,
+	Airborne,
+	VerticalVelocity,
+	ActivePrediction,
+	GroundRootY
+)
+	local Trajectories = {}
+	local RepeatConfidence = JumpPredictor.GetRepeatConfidence(Humanoid, MotionSample)
+	local TimeSpread = math.clamp(
+		JumpPredictor.BaseSpread + (JumpPredictor.SmoothedPing or 0) * JumpPredictor.PingSpread,
+		JumpPredictor.BaseSpread,
+		JumpPredictor.MaximumSpread
+	)
+
+	for Index = 1, JumpPredictor.SimulationSamples do
+		local Fraction = JumpPredictor.SimulationSamples == 1
+			and 0
+			or ((Index - 1) / (JumpPredictor.SimulationSamples - 1)) * 2 - 1
+		local PredictionDuration = math.clamp(
+			ActivePrediction + Fraction * TimeSpread,
+			0,
+			JumpPredictor.MaximumTotal + JumpPredictor.MaximumSpread
+		)
+		local TimeWeight = 1.35 - math.abs(Fraction) * 0.55
+		local NormalOffset = JumpPredictor.SimulateVerticalOffset(
+			Root,
+			Humanoid,
+			MotionSample,
+			Airborne,
+			VerticalVelocity,
+			PredictionDuration,
+			GroundRootY,
+			false
+		)
+
+		if RepeatConfidence >= JumpPredictor.RepeatThreshold then
+			local RepeatOffset = JumpPredictor.SimulateVerticalOffset(
+				Root,
+				Humanoid,
+				MotionSample,
+				Airborne,
+				VerticalVelocity,
+				PredictionDuration,
+				GroundRootY,
+				true
+			)
+
+			if math.abs(RepeatOffset - NormalOffset) > 0.02 then
+				Trajectories[#Trajectories + 1] = {
+					Offset = NormalOffset,
+					Weight = TimeWeight * math.max(0.2, 1 - RepeatConfidence)
+				}
+				Trajectories[#Trajectories + 1] = {
+					Offset = RepeatOffset,
+					Weight = TimeWeight * RepeatConfidence
+				}
+			else
+				Trajectories[#Trajectories + 1] = {
+					Offset = NormalOffset,
+					Weight = TimeWeight
+				}
+			end
+		else
+			Trajectories[#Trajectories + 1] = {
+				Offset = NormalOffset,
+				Weight = TimeWeight
+			}
+		end
+	end
+
+	return Trajectories
+end
+
+function JumpPredictor.GetWeightedMedianY(Intervals)
+	local Ordered = {}
+	local TotalWeight = 0
+
+	for _, Interval in ipairs(Intervals) do
+		Ordered[#Ordered + 1] = {
+			Y = Interval.Center,
+			Weight = Interval.Weight
+		}
+		TotalWeight = TotalWeight + Interval.Weight
+	end
+
+	table.sort(Ordered, function(Left, Right)
+		return Left.Y < Right.Y
+	end)
+
+	local RunningWeight = 0
+
+	for _, Entry in ipairs(Ordered) do
+		RunningWeight = RunningWeight + Entry.Weight
+
+		if RunningWeight >= TotalWeight * 0.5 then
+			return Entry.Y
+		end
+	end
+
+	return Ordered[#Ordered].Y
+end
+
+function JumpPredictor.SelectRobustVerticalAim(TargetCharacter, AimPart, StableAimY, Trajectories)
+	local LowerBodyOffset, UpperBodyOffset = JumpPredictor.GetBodyVerticalCorridor(TargetCharacter, AimPart)
+	local Intervals = {}
+	local AimCandidates = {}
+
+	for _, Trajectory in ipairs(Trajectories) do
+		local Center = StableAimY + Trajectory.Offset
+		local Lower = Center + LowerBodyOffset
+		local Upper = Center + UpperBodyOffset
+		local Interval = {
+			Center = Center,
+			Lower = Lower,
+			Upper = Upper,
+			Weight = Trajectory.Weight
+		}
+
+		Intervals[#Intervals + 1] = Interval
+		AimCandidates[#AimCandidates + 1] = Center
+		AimCandidates[#AimCandidates + 1] = Lower
+		AimCandidates[#AimCandidates + 1] = Upper
+		AimCandidates[#AimCandidates + 1] = (Lower + Upper) * 0.5
+	end
+
+	for LeftIndex = 1, #Intervals do
+		for RightIndex = LeftIndex + 1, #Intervals do
+			local OverlapLower = math.max(Intervals[LeftIndex].Lower, Intervals[RightIndex].Lower)
+			local OverlapUpper = math.min(Intervals[LeftIndex].Upper, Intervals[RightIndex].Upper)
+
+			if OverlapLower <= OverlapUpper then
+				AimCandidates[#AimCandidates + 1] = (OverlapLower + OverlapUpper) * 0.5
+			end
+		end
+	end
+
+	local PreferredY = JumpPredictor.GetWeightedMedianY(Intervals)
+	AimCandidates[#AimCandidates + 1] = PreferredY
+	local BestY = PreferredY
+	local BestScore = -math.huge
+
+	for _, CandidateY in ipairs(AimCandidates) do
+		local CoverageWeight = 0
+		local MissDistance = 0
+		local InteriorMargin = 0
+
+		for _, Interval in ipairs(Intervals) do
+			if CandidateY >= Interval.Lower and CandidateY <= Interval.Upper then
+				CoverageWeight = CoverageWeight + Interval.Weight
+				InteriorMargin = InteriorMargin + Interval.Weight * math.min(
+					CandidateY - Interval.Lower,
+					Interval.Upper - CandidateY
+				)
+			else
+				local Distance = CandidateY < Interval.Lower
+					and Interval.Lower - CandidateY
+					or CandidateY - Interval.Upper
+				MissDistance = MissDistance + Interval.Weight * Distance
+			end
+		end
+
+		local Score = CoverageWeight * 100
+			- MissDistance * 4
+			+ InteriorMargin * 0.5
+			- math.abs(CandidateY - PreferredY) * 0.08
+
+		if Score > BestScore then
+			BestScore = Score
+			BestY = CandidateY
+		end
+	end
+
+	return BestY
+end
+
+function JumpPredictor.GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverride)
 	local Root = TargetCharacter:FindFirstChild("HumanoidRootPart")
 	local Humanoid = TargetCharacter:FindFirstChildOfClass("Humanoid")
-	local RequestedPrediction = PredictionOverride == nil and PredictionTime or PredictionOverride
+	local RequestedPrediction = PredictionOverride == nil and JumpPredictor.Time or PredictionOverride
 
 	if not Root or not Humanoid or RequestedPrediction <= 0 then
 		return AimPart.Position
 	end
 
 	local AvatarPredictionScale = GetAvatarPredictionScale(Humanoid)
-	local ManualPrediction = math.clamp(RequestedPrediction, MinimumPrediction, MaximumPrediction)
+	local ManualPrediction = math.clamp(RequestedPrediction, JumpPredictor.Minimum, JumpPredictor.Maximum)
 		* AvatarPredictionScale
 	local PingPrediction = GetPingPredictionOffset() * AvatarPredictionScale
-	local ActivePrediction = math.clamp(ManualPrediction + PingPrediction, MinimumPrediction, MaximumTotalPrediction)
-	local VerticalActivePrediction = math.clamp(
-		ManualPrediction + PingPrediction * VerticalPingInfluence,
-		MinimumPrediction,
-		MaximumTotalPrediction
+	local ActivePrediction = math.clamp(
+		ManualPrediction + PingPrediction,
+		JumpPredictor.Minimum,
+		JumpPredictor.MaximumTotal
 	)
-
-	local State = Humanoid:GetState()
-	local Airborne = State == Enum.HumanoidStateType.Jumping
-		or State == Enum.HumanoidStateType.Freefall
-	local HorizontalVelocity, RawVerticalVelocity = GetFilteredPredictionVelocity(TargetCharacter, Root, Humanoid)
-	local VerticalVelocity = Airborne and math.clamp(RawVerticalVelocity, -MaximumVerticalVelocity, MaximumVerticalVelocity) or 0
-	local VerticalOffset = 0
-
-	if Airborne and math.abs(VerticalVelocity) > VerticalPredictionDeadzone then
-		local ActiveVerticalMultiplier = VerticalVelocity > 0
-			and RisingPredictionMultiplier
-			or VerticalPredictionMultiplier
-		local VerticalPredictionTime = VerticalActivePrediction * ActiveVerticalMultiplier
-
-		if VerticalVelocity < 0 then
-			VerticalPredictionTime = VerticalPredictionTime * FallingPredictionMultiplier
-		end
-
-		VerticalOffset = VerticalVelocity * VerticalPredictionTime
-			- 0.5 * workspace.Gravity * VerticalPredictionTime * VerticalPredictionTime * VerticalGravityMultiplier
-
-		local MaximumVerticalOffset = math.clamp(Humanoid.HipHeight + Root.Size.Y * 0.75, 2.5, 4)
-		local MaximumUpwardOffset = math.min(MaximumVerticalOffset, MaximumRisingPredictionOffset)
-		VerticalOffset = math.clamp(VerticalOffset, -MaximumVerticalOffset, MaximumUpwardOffset)
-	end
-
+	local HorizontalVelocity, VerticalVelocity, Airborne, MotionSample = JumpPredictor.GetFilteredVelocity(
+		TargetCharacter,
+		Root,
+		Humanoid
+	)
 	local AimOffset = AimPart.Position - Root.Position
-	local ActiveAimPartBias = Airborne and 0.45 or PredictionAimPartBias
-	local AirborneAimLowering = 0
-
-	if Airborne then
-		AirborneAimLowering = VerticalVelocity > VerticalPredictionDeadzone and 1 or 0.7
-	end
-
-	local StableAimPosition = Root.Position
-		+ AimOffset * ActiveAimPartBias
-		- Vector3.new(0, AirborneAimLowering, 0)
+	local StableAimPosition = Root.Position + Vector3.new(
+		AimOffset.X * 0.35,
+		AimOffset.Y,
+		AimOffset.Z * 0.35
+	)
 	local HorizontalOffset = HorizontalVelocity * ActivePrediction
 	local LocalCharacter = LocalPlayer.Character
 	local LocalRoot = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
-	local ClosingSpeed = 0
 
 	if LocalRoot then
 		local ToShooter = Vector3.new(
@@ -776,9 +1248,9 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		)
 
 		if ToShooter.Magnitude > 0.01 then
-			ClosingSpeed = HorizontalVelocity:Dot(ToShooter.Unit)
+			local ClosingSpeed = HorizontalVelocity:Dot(ToShooter.Unit)
 
-			if ClosingSpeed > ClosingSpeedThreshold then
+			if ClosingSpeed > JumpPredictor.ClosingSpeedThreshold then
 				local MaximumClosingLead = math.max(ToShooter.Magnitude - 2, 0)
 
 				if HorizontalOffset.Magnitude > MaximumClosingLead then
@@ -790,30 +1262,34 @@ local function GetPredictedAimPosition(TargetCharacter, AimPart, PredictionOverr
 		end
 	end
 
-	local PredictedPosition = StableAimPosition
-		+ HorizontalOffset
-		+ Vector3.new(0, VerticalOffset, 0)
+	local FutureRootPosition = Root.Position + HorizontalOffset
+	local GroundRootY = JumpPredictor.GetPredictedGroundRootY(
+		TargetCharacter,
+		Root,
+		Humanoid,
+		FutureRootPosition
+	)
+	local Trajectories = JumpPredictor.BuildTrajectoryBank(
+		Root,
+		Humanoid,
+		MotionSample,
+		Airborne,
+		VerticalVelocity,
+		ActivePrediction,
+		GroundRootY
+	)
+	local PredictedY = JumpPredictor.SelectRobustVerticalAim(
+		TargetCharacter,
+		AimPart,
+		StableAimPosition.Y,
+		Trajectories
+	)
 
-	if ClosingSpeed > ClosingSpeedThreshold then
-		PredictionGroundParameters.FilterDescendantsInstances = LocalCharacter
-			and { TargetCharacter, LocalCharacter }
-			or { TargetCharacter }
-
-		local RayOrigin = Vector3.new(PredictedPosition.X, Root.Position.Y + 0.5, PredictedPosition.Z)
-		local RayDistance = math.max(10, Humanoid.HipHeight + Root.Size.Y + 6)
-		local GroundResult = workspace:Raycast(RayOrigin, Vector3.new(0, -RayDistance, 0), PredictionGroundParameters)
-
-		if GroundResult then
-			local MinimumAimHeight = math.clamp(Humanoid.HipHeight + Root.Size.Y * 0.5, 2.5, 4)
-			local MinimumAimY = GroundResult.Position.Y + MinimumAimHeight
-
-			if PredictedPosition.Y < MinimumAimY then
-				PredictedPosition = Vector3.new(PredictedPosition.X, MinimumAimY, PredictedPosition.Z)
-			end
-		end
-	end
-
-	return PredictedPosition
+	return Vector3.new(
+		StableAimPosition.X + HorizontalOffset.X,
+		PredictedY,
+		StableAimPosition.Z + HorizontalOffset.Z
+	)
 end
 
 local function GetCharacterScreenDistance(Character, PointerPosition)
@@ -874,13 +1350,13 @@ local function FindTargetNearPointer(PointerPosition, OriginPosition)
 			local Character = Player.Character
 			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
 			local Root = Character and Character:FindFirstChild("HumanoidRootPart")
-			local AimPart = Character and (Character:FindFirstChild("Head") or Root)
+			local AimPart = Character and JumpPredictor.GetPreferredAimPart(Character)
 
 			if Humanoid and Humanoid.Health > 0 and Root and AimPart then
 				local ScreenDistance = GetCharacterScreenDistance(Character, PointerPosition)
 
 				if ScreenDistance and ScreenDistance <= BestDistance then
-					local PredictedPosition = GetPredictedAimPosition(Character, AimPart)
+					local PredictedPosition = JumpPredictor.GetPredictedAimPosition(Character, AimPart)
 
 					if HasClearShot(OriginPosition, Character, PredictedPosition) then
 						BestPlayer = Player
@@ -1796,7 +2272,7 @@ local function FireResolvedTarget(Shoot, OriginAttachment, TargetPlayer, AimPart
 		return false
 	end
 
-	local PredictedPosition = GetPredictedAimPosition(TargetCharacter, AimPart)
+	local PredictedPosition = JumpPredictor.GetPredictedAimPosition(TargetCharacter, AimPart)
 	if not HasClearShot(OriginAttachment.WorldPosition, TargetCharacter, PredictedPosition) then
 		return false
 	end
@@ -1850,7 +2326,7 @@ local function ShootMurdererPrivilege()
 	local MurdererCharacter = Murderer and Murderer.Character
 	local MurdererHumanoid = MurdererCharacter and MurdererCharacter:FindFirstChildOfClass("Humanoid")
 	local MurdererRoot = MurdererCharacter and MurdererCharacter:FindFirstChild("HumanoidRootPart")
-	local AimPart = MurdererCharacter and (MurdererCharacter:FindFirstChild("Head") or MurdererRoot)
+	local AimPart = MurdererCharacter and JumpPredictor.GetPreferredAimPart(MurdererCharacter)
 
 	if not Murderer or not MurdererHumanoid or MurdererHumanoid.Health <= 0 or not MurdererRoot or not AimPart then
 		Window:Notify({ Title = "Shoot Murderer", Content = "No living murderer was detected", Type = "Error" })
@@ -1926,7 +2402,7 @@ local function ShootMurdererPrivilege()
 	Humanoid.Sit = false
 	Humanoid.PlatformStand = false
 	local Success, ErrorMessage = pcall(function()
-		local PredictedPosition = GetPredictedAimPosition(MurdererCharacter, AimPart)
+		local PredictedPosition = JumpPredictor.GetPredictedAimPosition(MurdererCharacter, AimPart)
 		local AbovePosition = MurdererRoot.Position + Vector3.new(0, StaffShotHeight, 0)
 		local FlatLookPosition = Vector3.new(PredictedPosition.X, AbovePosition.Y, PredictedPosition.Z)
 
@@ -1939,7 +2415,7 @@ local function ShootMurdererPrivilege()
 		Root.AssemblyAngularVelocity = Vector3.zero
 		RunService.Heartbeat:Wait()
 
-		PredictedPosition = GetPredictedAimPosition(MurdererCharacter, AimPart)
+		PredictedPosition = JumpPredictor.GetPredictedAimPosition(MurdererCharacter, AimPart)
 		AbovePosition = MurdererRoot.Position + Vector3.new(0, StaffShotHeight, 0)
 		FlatLookPosition = Vector3.new(PredictedPosition.X, AbovePosition.Y, PredictedPosition.Z)
 
@@ -2152,13 +2628,13 @@ RoleVisualsControl = TargetingSection:AddToggle({
 TargetingSection:AddSlider({
 	Name = "Prediction",
 	Flag = "Prediction",
-	Minimum = MinimumPrediction,
-	Maximum = MaximumPrediction,
+	Minimum = JumpPredictor.Minimum,
+	Maximum = JumpPredictor.Maximum,
 	Increment = 0.01,
-	Default = PredictionTime,
+	Default = JumpPredictor.Time,
 	Suffix = "s",
 	Callback = function(Value)
-		PredictionTime = Value
+		JumpPredictor.Time = Value
 	end
 })
 
@@ -2371,6 +2847,12 @@ RefreshRoleVisuals()
 Track(RunService.RenderStepped:Connect(function(DeltaTime)
 	UpdateSpectator(DeltaTime)
 	AutoGrabGunAccumulator = AutoGrabGunAccumulator + DeltaTime
+	JumpPredictor.SampleAccumulator = JumpPredictor.SampleAccumulator + DeltaTime
+
+	if JumpPredictor.SampleAccumulator >= JumpPredictor.SampleInterval then
+		JumpPredictor.SampleAccumulator = JumpPredictor.SampleAccumulator % JumpPredictor.SampleInterval
+		JumpPredictor.SampleNearbyMotion()
+	end
 
 	if AutoGrabGunEnabled and AutoGrabGunAccumulator >= AutoGrabGunInterval then
 		AutoGrabGunAccumulator = 0
