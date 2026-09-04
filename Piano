@@ -1,0 +1,1916 @@
+--// Advanced Piano Sheet AutoPlayer
+--// Supports keypress() / keyrelease()
+--// Tempo + live speed
+--// Virtual Piano-style notation
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+--==================================================
+-- SETTINGS
+--==================================================
+
+local DEFAULT_TEMPO = 120
+local MIN_TEMPO = 20
+local MAX_TEMPO = 500
+
+local MIN_SPEED = 0.25
+local MAX_SPEED = 4
+
+-- 4 sheet events per musical beat.
+-- At 120 BPM, one normal sheet event ~= 0.125 sec.
+local STEPS_PER_BEAT = 4
+
+local HOLD_PORTION = 0.35
+
+local CurrentTempo = DEFAULT_TEMPO
+local SpeedMultiplier = 1
+
+local Playing = false
+local PlaySession = 0
+
+--==================================================
+-- WINDOWS VIRTUAL KEY CODES
+--==================================================
+
+local SHIFT = 0x10
+
+local NormalKeys = {
+	A = 0x41,
+	B = 0x42,
+	C = 0x43,
+	D = 0x44,
+	E = 0x45,
+	F = 0x46,
+	G = 0x47,
+	H = 0x48,
+	I = 0x49,
+	J = 0x4A,
+	K = 0x4B,
+	L = 0x4C,
+	M = 0x4D,
+	N = 0x4E,
+	O = 0x4F,
+	P = 0x50,
+	Q = 0x51,
+	R = 0x52,
+	S = 0x53,
+	T = 0x54,
+	U = 0x55,
+	V = 0x56,
+	W = 0x57,
+	X = 0x58,
+	Y = 0x59,
+	Z = 0x5A,
+
+	["0"] = 0x30,
+	["1"] = 0x31,
+	["2"] = 0x32,
+	["3"] = 0x33,
+	["4"] = 0x34,
+	["5"] = 0x35,
+	["6"] = 0x36,
+	["7"] = 0x37,
+	["8"] = 0x38,
+	["9"] = 0x39,
+
+	[";"] = 0xBA,
+	["="] = 0xBB,
+	[","] = 0xBC,
+	["-"] = 0xBD,
+	["."] = 0xBE,
+	["/"] = 0xBF,
+	["`"] = 0xC0,
+	["["] = 0xDB,
+	["\\"] = 0xDC,
+	["]"] = 0xDD,
+	["'"] = 0xDE
+}
+
+local ShiftedSymbols = {
+	["!"] = 0x31,
+	["@"] = 0x32,
+	["#"] = 0x33,
+	["$"] = 0x34,
+	["%"] = 0x35,
+	["^"] = 0x36,
+	["&"] = 0x37,
+	["*"] = 0x38,
+	["("] = 0x39,
+	[")"] = 0x30,
+
+	["_"] = 0xBD,
+	["+"] = 0xBB,
+	["{"] = 0xDB,
+	["}"] = 0xDD,
+	["|"] = 0xDC,
+	[":"] = 0xBA,
+	['"'] = 0xDE,
+	["<"] = 0xBC,
+	[">"] = 0xBE,
+	["?"] = 0xBF,
+	["~"] = 0xC0
+}
+
+--==================================================
+-- KEY INFO
+--==================================================
+
+local function GetKeyInfo(Character)
+	if not Character or Character == "" then
+		return nil
+	end
+
+	-- Uppercase letter = Shift + letter
+	if Character:match("%u") then
+		local Code = NormalKeys[Character]
+
+		if Code then
+			return {
+				Code = Code,
+				Shift = true,
+				Raw = Character
+			}
+		end
+	end
+
+	-- Lowercase letter
+	if Character:match("%l") then
+		local Code = NormalKeys[string.upper(Character)]
+
+		if Code then
+			return {
+				Code = Code,
+				Shift = false,
+				Raw = Character
+			}
+		end
+	end
+
+	-- Shifted symbols
+	local ShiftedCode = ShiftedSymbols[Character]
+
+	if ShiftedCode then
+		return {
+			Code = ShiftedCode,
+			Shift = true,
+			Raw = Character
+		}
+	end
+
+	-- Normal numbers / punctuation
+	local Code = NormalKeys[Character]
+
+	if Code then
+		return {
+			Code = Code,
+			Shift = false,
+			Raw = Character
+		}
+	end
+
+	return nil
+end
+
+--==================================================
+-- INPUT
+--==================================================
+
+local function Press(Code)
+	pcall(function()
+		keypress(Code)
+	end)
+end
+
+local function Release(Code)
+	pcall(function()
+		keyrelease(Code)
+	end)
+end
+
+local function ReleaseEverything()
+	Release(SHIFT)
+
+	local Released = {}
+
+	for _, Code in pairs(NormalKeys) do
+		if not Released[Code] then
+			Released[Code] = true
+			Release(Code)
+		end
+	end
+
+	for _, Code in pairs(ShiftedSymbols) do
+		if not Released[Code] then
+			Released[Code] = true
+			Release(Code)
+		end
+	end
+end
+
+--==================================================
+-- LIVE TEMPO / SPEED WAIT
+--==================================================
+
+local function GetSecondsPerStep()
+	local Tempo = math.clamp(
+		CurrentTempo,
+		MIN_TEMPO,
+		MAX_TEMPO
+	)
+
+	return (60 / Tempo) / STEPS_PER_BEAT
+end
+
+local function DynamicWait(Steps, Session)
+	local Progress = 0
+
+	while Progress < Steps do
+		if not Playing or Session ~= PlaySession then
+			return false
+		end
+
+		local DeltaTime = RunService.Heartbeat:Wait()
+
+		local SecondsPerStep =
+			GetSecondsPerStep()
+
+		-- Both Tempo and SpeedMultiplier are read
+		-- every frame, so BOTH update live.
+		Progress +=
+			DeltaTime
+			* SpeedMultiplier
+			/ SecondsPerStep
+	end
+
+	return true
+end
+
+--==================================================
+-- SINGLE NOTE
+--==================================================
+
+local function PlaySingle(Info, Session)
+	if not Info then
+		return false
+	end
+
+	if Info.Shift then
+		Press(SHIFT)
+	end
+
+	Press(Info.Code)
+
+	local Success =
+		DynamicWait(
+			HOLD_PORTION,
+			Session
+		)
+
+	Release(Info.Code)
+
+	if Info.Shift then
+		Release(SHIFT)
+	end
+
+	return Success
+end
+
+--==================================================
+-- CHORD
+--==================================================
+
+local function PlayChord(Keys, Session)
+	local Normal = {}
+	local Shifted = {}
+
+	for _, Info in ipairs(Keys) do
+		if Info.Shift then
+			table.insert(
+				Shifted,
+				Info
+			)
+		else
+			table.insert(
+				Normal,
+				Info
+			)
+		end
+	end
+
+	-- Normal keys first.
+	-- Example:
+	-- [6G]
+	--
+	-- This prevents the 6 from becoming ^.
+
+	for _, Info in ipairs(Normal) do
+		Press(Info.Code)
+	end
+
+	if #Shifted > 0 then
+		Press(SHIFT)
+
+		for _, Info in ipairs(Shifted) do
+			Press(Info.Code)
+		end
+	end
+
+	local Success =
+		DynamicWait(
+			HOLD_PORTION,
+			Session
+		)
+
+	for Index = #Shifted, 1, -1 do
+		Release(
+			Shifted[Index].Code
+		)
+	end
+
+	if #Shifted > 0 then
+		Release(SHIFT)
+	end
+
+	for Index = #Normal, 1, -1 do
+		Release(
+			Normal[Index].Code
+		)
+	end
+
+	return Success
+end
+
+--==================================================
+-- SHEET PARSER
+--==================================================
+
+local function ParseSheet(Text)
+	local Events = {}
+
+	local Index = 1
+
+	while Index <= #Text do
+		local Character =
+			Text:sub(
+				Index,
+				Index
+			)
+
+		--==========================================
+		-- [CHORD]
+		--==========================================
+
+		if Character == "[" then
+			local Close =
+				Text:find(
+					"]",
+					Index + 1,
+					true
+				)
+
+			if Close then
+				local Contents =
+					Text:sub(
+						Index + 1,
+						Close - 1
+					)
+
+				local Keys = {}
+
+				for Position = 1, #Contents do
+					local ChordCharacter =
+						Contents:sub(
+							Position,
+							Position
+						)
+
+					local Info =
+						GetKeyInfo(
+							ChordCharacter
+						)
+
+					if Info then
+						table.insert(
+							Keys,
+							Info
+						)
+					end
+				end
+
+				if #Keys > 0 then
+					table.insert(
+						Events,
+						{
+							Type = "Chord",
+							Keys = Keys,
+							Raw = Contents
+						}
+					)
+				end
+
+				Index = Close + 1
+			else
+				Index += 1
+			end
+
+		--==========================================
+		-- - = EXTRA REST
+		--==========================================
+
+		elseif Character == "-" then
+			table.insert(
+				Events,
+				{
+					Type = "Rest",
+					Steps = 1
+				}
+			)
+
+			Index += 1
+
+		--==========================================
+		-- SPACE = SMALL RHYTHM GAP
+		--==========================================
+
+		elseif Character == " " then
+			table.insert(
+				Events,
+				{
+					Type = "Rest",
+					Steps = 0.35
+				}
+			)
+
+			Index += 1
+
+		--==========================================
+		-- NEW LINE
+		--==========================================
+
+		elseif Character == "\n" then
+			table.insert(
+				Events,
+				{
+					Type = "Rest",
+					Steps = 0.5
+				}
+			)
+
+			Index += 1
+
+		elseif Character == "\r"
+			or Character == "\t" then
+
+			Index += 1
+
+		--==========================================
+		-- NORMAL NOTE
+		--==========================================
+
+		else
+			local Info =
+				GetKeyInfo(
+					Character
+				)
+
+			if Info then
+				table.insert(
+					Events,
+					{
+						Type = "Note",
+						Key = Info,
+						Raw = Character
+					}
+				)
+			end
+
+			Index += 1
+		end
+	end
+
+	return Events
+end
+
+--==================================================
+-- REMOVE OLD GUI
+--==================================================
+
+local Old =
+	PlayerGui:FindFirstChild(
+		"PianoSheetAutoPlayer"
+	)
+
+if Old then
+	Old:Destroy()
+end
+
+--==================================================
+-- SCREEN GUI
+--==================================================
+
+local GUI =
+	Instance.new("ScreenGui")
+
+GUI.Name =
+	"PianoSheetAutoPlayer"
+
+GUI.ResetOnSpawn = false
+
+GUI.DisplayOrder =
+	2147483647
+
+GUI.ZIndexBehavior =
+	Enum.ZIndexBehavior.Sibling
+
+GUI.Parent =
+	PlayerGui
+
+--==================================================
+-- MAIN
+--==================================================
+
+local Main =
+	Instance.new("Frame")
+
+Main.Size =
+	UDim2.fromOffset(
+		440,
+		570
+	)
+
+Main.Position =
+	UDim2.new(
+		0.5,
+		-220,
+		0.5,
+		-285
+	)
+
+Main.BackgroundColor3 =
+	Color3.fromRGB(
+		23,
+		24,
+		28
+	)
+
+Main.BorderSizePixel = 0
+Main.ZIndex = 1
+Main.Parent = GUI
+
+Instance.new(
+	"UICorner",
+	Main
+).CornerRadius =
+	UDim.new(
+		0,
+		11
+	)
+
+local MainStroke =
+	Instance.new("UIStroke")
+
+MainStroke.Color =
+	Color3.fromRGB(
+		72,
+		74,
+		82
+	)
+
+MainStroke.Thickness = 1
+MainStroke.Parent = Main
+
+--==================================================
+-- TOP BAR
+--==================================================
+
+local Top =
+	Instance.new("Frame")
+
+Top.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		45
+	)
+
+Top.BackgroundColor3 =
+	Color3.fromRGB(
+		32,
+		33,
+		38
+	)
+
+Top.BorderSizePixel = 0
+Top.ZIndex = 2
+Top.Parent = Main
+
+Instance.new(
+	"UICorner",
+	Top
+).CornerRadius =
+	UDim.new(
+		0,
+		11
+	)
+
+local Title =
+	Instance.new("TextLabel")
+
+Title.Position =
+	UDim2.fromOffset(
+		13,
+		0
+	)
+
+Title.Size =
+	UDim2.new(
+		1,
+		-60,
+		1,
+		0
+	)
+
+Title.BackgroundTransparency = 1
+
+Title.Text =
+	"🎹 Piano Sheet AutoPlayer"
+
+Title.TextColor3 =
+	Color3.fromRGB(
+		245,
+		245,
+		248
+	)
+
+Title.Font =
+	Enum.Font.GothamBold
+
+Title.TextSize = 16
+
+Title.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+Title.ZIndex = 3
+Title.Parent = Top
+
+local Close =
+	Instance.new("TextButton")
+
+Close.Size =
+	UDim2.fromOffset(
+		32,
+		30
+	)
+
+Close.Position =
+	UDim2.new(
+		1,
+		-39,
+		0.5,
+		-15
+	)
+
+Close.BackgroundColor3 =
+	Color3.fromRGB(
+		57,
+		58,
+		65
+	)
+
+Close.BorderSizePixel = 0
+
+Close.Text = "X"
+
+Close.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+Close.Font =
+	Enum.Font.GothamBold
+
+Close.TextSize = 14
+Close.ZIndex = 3
+Close.Parent = Top
+
+Instance.new(
+	"UICorner",
+	Close
+).CornerRadius =
+	UDim.new(
+		0,
+		6
+	)
+
+--==================================================
+-- DRAGGING
+--==================================================
+
+local Dragging = false
+local DragStart
+local StartPosition
+
+Top.InputBegan:Connect(function(Input)
+	if Input.UserInputType
+			== Enum.UserInputType.MouseButton1
+		or Input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		Dragging = true
+
+		DragStart =
+			Input.Position
+
+		StartPosition =
+			Main.Position
+	end
+end)
+
+Top.InputEnded:Connect(function(Input)
+	if Input.UserInputType
+			== Enum.UserInputType.MouseButton1
+		or Input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		Dragging = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+	if not Dragging then
+		return
+	end
+
+	if Input.UserInputType
+			== Enum.UserInputType.MouseMovement
+		or Input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		local Delta =
+			Input.Position
+			- DragStart
+
+		Main.Position =
+			UDim2.new(
+				StartPosition.X.Scale,
+				StartPosition.X.Offset + Delta.X,
+
+				StartPosition.Y.Scale,
+				StartPosition.Y.Offset + Delta.Y
+			)
+	end
+end)
+
+--==================================================
+-- STATUS
+--==================================================
+
+local Status =
+	Instance.new("TextLabel")
+
+Status.Position =
+	UDim2.fromOffset(
+		10,
+		55
+	)
+
+Status.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		36
+	)
+
+Status.BackgroundColor3 =
+	Color3.fromRGB(
+		35,
+		36,
+		42
+	)
+
+Status.BorderSizePixel = 0
+
+Status.Text =
+	"Paste your sheet below."
+
+Status.TextColor3 =
+	Color3.fromRGB(
+		215,
+		216,
+		222
+	)
+
+Status.Font =
+	Enum.Font.Gotham
+
+Status.TextSize = 12
+Status.TextWrapped = true
+
+Status.ZIndex = 2
+Status.Parent = Main
+
+Instance.new(
+	"UICorner",
+	Status
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local function SetStatus(Text)
+	Status.Text = Text
+end
+
+--==================================================
+-- PLAY BUTTON
+--==================================================
+
+local PlayButton =
+	Instance.new("TextButton")
+
+PlayButton.Position =
+	UDim2.fromOffset(
+		10,
+		101
+	)
+
+PlayButton.Size =
+	UDim2.new(
+		0.5,
+		-15,
+		0,
+		45
+	)
+
+PlayButton.BackgroundColor3 =
+	Color3.fromRGB(
+		52,
+		54,
+		62
+	)
+
+PlayButton.BorderSizePixel = 0
+
+PlayButton.Text =
+	"▶ PLAY"
+
+PlayButton.TextColor3 =
+	Color3.fromRGB(
+		250,
+		250,
+		252
+	)
+
+PlayButton.Font =
+	Enum.Font.GothamBold
+
+PlayButton.TextSize = 15
+
+PlayButton.ZIndex = 2
+PlayButton.Parent = Main
+
+Instance.new(
+	"UICorner",
+	PlayButton
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+--==================================================
+-- STOP BUTTON
+--==================================================
+
+local StopButton =
+	Instance.new("TextButton")
+
+StopButton.Position =
+	UDim2.new(
+		0.5,
+		5,
+		0,
+		101
+	)
+
+StopButton.Size =
+	UDim2.new(
+		0.5,
+		-15,
+		0,
+		45
+	)
+
+StopButton.BackgroundColor3 =
+	Color3.fromRGB(
+		52,
+		54,
+		62
+	)
+
+StopButton.BorderSizePixel = 0
+
+StopButton.Text =
+	"■ STOP"
+
+StopButton.TextColor3 =
+	Color3.fromRGB(
+		250,
+		250,
+		252
+	)
+
+StopButton.Font =
+	Enum.Font.GothamBold
+
+StopButton.TextSize = 15
+
+StopButton.ZIndex = 2
+StopButton.Parent = Main
+
+Instance.new(
+	"UICorner",
+	StopButton
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+--==================================================
+-- TEMPO LABEL
+--==================================================
+
+local TempoLabel =
+	Instance.new("TextLabel")
+
+TempoLabel.Position =
+	UDim2.fromOffset(
+		10,
+		158
+	)
+
+TempoLabel.Size =
+	UDim2.fromOffset(
+		105,
+		34
+	)
+
+TempoLabel.BackgroundTransparency = 1
+
+TempoLabel.Text =
+	"Tempo (BPM):"
+
+TempoLabel.TextColor3 =
+	Color3.fromRGB(
+		220,
+		221,
+		226
+	)
+
+TempoLabel.Font =
+	Enum.Font.GothamMedium
+
+TempoLabel.TextSize = 13
+
+TempoLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+TempoLabel.ZIndex = 2
+TempoLabel.Parent = Main
+
+--==================================================
+-- TEMPO BOX
+--==================================================
+
+local TempoBox =
+	Instance.new("TextBox")
+
+TempoBox.Position =
+	UDim2.fromOffset(
+		115,
+		157
+	)
+
+TempoBox.Size =
+	UDim2.fromOffset(
+		90,
+		36
+	)
+
+TempoBox.BackgroundColor3 =
+	Color3.fromRGB(
+		38,
+		39,
+		46
+	)
+
+TempoBox.BorderSizePixel = 0
+
+TempoBox.Text =
+	tostring(DEFAULT_TEMPO)
+
+TempoBox.PlaceholderText =
+	tostring(DEFAULT_TEMPO)
+
+TempoBox.ClearTextOnFocus = false
+
+TempoBox.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+TempoBox.PlaceholderColor3 =
+	Color3.fromRGB(
+		130,
+		132,
+		140
+	)
+
+TempoBox.Font =
+	Enum.Font.GothamMedium
+
+TempoBox.TextSize = 13
+
+TempoBox.ZIndex = 2
+TempoBox.Parent = Main
+
+Instance.new(
+	"UICorner",
+	TempoBox
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+--==================================================
+-- TEMPO STATUS
+--==================================================
+
+local TempoStatus =
+	Instance.new("TextLabel")
+
+TempoStatus.Position =
+	UDim2.fromOffset(
+		215,
+		158
+	)
+
+TempoStatus.Size =
+	UDim2.new(
+		1,
+		-225,
+		0,
+		34
+	)
+
+TempoStatus.BackgroundTransparency = 1
+
+TempoStatus.Text =
+	"Default: 120"
+
+TempoStatus.TextColor3 =
+	Color3.fromRGB(
+		145,
+		147,
+		155
+	)
+
+TempoStatus.Font =
+	Enum.Font.Gotham
+
+TempoStatus.TextSize = 11
+
+TempoStatus.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+TempoStatus.ZIndex = 2
+TempoStatus.Parent = Main
+
+--==================================================
+-- LIVE TEMPO INPUT
+--==================================================
+
+local function UpdateTempoFromBox()
+	local Text = TempoBox.Text
+
+	if Text == "" then
+		CurrentTempo =
+			DEFAULT_TEMPO
+
+		TempoStatus.Text =
+			"Using default: "
+			.. DEFAULT_TEMPO
+
+		return
+	end
+
+	local Number =
+		tonumber(Text)
+
+	if not Number then
+		return
+	end
+
+	CurrentTempo =
+		math.clamp(
+			Number,
+			MIN_TEMPO,
+			MAX_TEMPO
+		)
+
+	TempoStatus.Text =
+		string.format(
+			"Live: %d BPM",
+			math.floor(CurrentTempo + 0.5)
+		)
+end
+
+TempoBox:GetPropertyChangedSignal(
+	"Text"
+):Connect(
+	UpdateTempoFromBox
+)
+
+TempoBox.FocusLost:Connect(function()
+	if TempoBox.Text == "" then
+		CurrentTempo =
+			DEFAULT_TEMPO
+
+		TempoStatus.Text =
+			"Using default: "
+			.. DEFAULT_TEMPO
+
+		return
+	end
+
+	local Number =
+		tonumber(
+			TempoBox.Text
+		)
+
+	if not Number then
+		CurrentTempo =
+			DEFAULT_TEMPO
+
+		TempoBox.Text =
+			tostring(
+				DEFAULT_TEMPO
+			)
+
+		return
+	end
+
+	CurrentTempo =
+		math.clamp(
+			Number,
+			MIN_TEMPO,
+			MAX_TEMPO
+		)
+
+	TempoBox.Text =
+		tostring(
+			math.floor(
+				CurrentTempo
+				+ 0.5
+			)
+		)
+end)
+
+--==================================================
+-- SPEED LABEL
+--==================================================
+
+local SpeedLabel =
+	Instance.new("TextLabel")
+
+SpeedLabel.Position =
+	UDim2.fromOffset(
+		10,
+		203
+	)
+
+SpeedLabel.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		25
+	)
+
+SpeedLabel.BackgroundTransparency = 1
+
+SpeedLabel.Text =
+	"Speed: 1.00x  •  LIVE"
+
+SpeedLabel.TextColor3 =
+	Color3.fromRGB(
+		225,
+		226,
+		230
+	)
+
+SpeedLabel.Font =
+	Enum.Font.GothamMedium
+
+SpeedLabel.TextSize = 13
+
+SpeedLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+SpeedLabel.ZIndex = 2
+SpeedLabel.Parent = Main
+
+--==================================================
+-- SPEED SLIDER
+--==================================================
+
+local Slider =
+	Instance.new("Frame")
+
+Slider.Position =
+	UDim2.fromOffset(
+		10,
+		235
+	)
+
+Slider.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		10
+	)
+
+Slider.BackgroundColor3 =
+	Color3.fromRGB(
+		64,
+		65,
+		72
+	)
+
+Slider.BorderSizePixel = 0
+
+Slider.ZIndex = 2
+Slider.Parent = Main
+
+Instance.new(
+	"UICorner",
+	Slider
+).CornerRadius =
+	UDim.new(
+		1,
+		0
+	)
+
+local StartingAlpha =
+	(1 - MIN_SPEED)
+	/ (MAX_SPEED - MIN_SPEED)
+
+local Fill =
+	Instance.new("Frame")
+
+Fill.Size =
+	UDim2.new(
+		StartingAlpha,
+		0,
+		1,
+		0
+	)
+
+Fill.BackgroundColor3 =
+	Color3.fromRGB(
+		220,
+		222,
+		228
+	)
+
+Fill.BorderSizePixel = 0
+
+Fill.ZIndex = 3
+Fill.Parent = Slider
+
+Instance.new(
+	"UICorner",
+	Fill
+).CornerRadius =
+	UDim.new(
+		1,
+		0
+	)
+
+local Knob =
+	Instance.new("TextButton")
+
+Knob.AnchorPoint =
+	Vector2.new(
+		0.5,
+		0.5
+	)
+
+Knob.Size =
+	UDim2.fromOffset(
+		21,
+		21
+	)
+
+Knob.Position =
+	UDim2.new(
+		StartingAlpha,
+		0,
+		0.5,
+		0
+	)
+
+Knob.BackgroundColor3 =
+	Color3.fromRGB(
+		245,
+		245,
+		248
+	)
+
+Knob.BorderSizePixel = 0
+Knob.Text = ""
+
+Knob.ZIndex = 4
+Knob.Parent = Slider
+
+Instance.new(
+	"UICorner",
+	Knob
+).CornerRadius =
+	UDim.new(
+		1,
+		0
+	)
+
+--==================================================
+-- SPEED DRAG
+--==================================================
+
+local SliderDragging = false
+
+local function SetSpeedFromX(X)
+	if Slider.AbsoluteSize.X <= 0 then
+		return
+	end
+
+	local Alpha =
+		math.clamp(
+			(
+				X
+				- Slider.AbsolutePosition.X
+			)
+			/ Slider.AbsoluteSize.X,
+			0,
+			1
+		)
+
+	SpeedMultiplier =
+		MIN_SPEED
+		+ (
+			MAX_SPEED
+			- MIN_SPEED
+		)
+		* Alpha
+
+	SpeedMultiplier =
+		math.floor(
+			SpeedMultiplier
+			* 100
+			+ 0.5
+		)
+		/ 100
+
+	Fill.Size =
+		UDim2.new(
+			Alpha,
+			0,
+			1,
+			0
+		)
+
+	Knob.Position =
+		UDim2.new(
+			Alpha,
+			0,
+			0.5,
+			0
+		)
+
+	SpeedLabel.Text =
+		string.format(
+			"Speed: %.2fx  •  LIVE",
+			SpeedMultiplier
+		)
+end
+
+Slider.InputBegan:Connect(function(Input)
+	if Input.UserInputType
+			== Enum.UserInputType.MouseButton1
+		or Input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		SliderDragging = true
+
+		SetSpeedFromX(
+			Input.Position.X
+		)
+	end
+end)
+
+Knob.InputBegan:Connect(function(Input)
+	if Input.UserInputType
+			== Enum.UserInputType.MouseButton1
+		or Input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		SliderDragging = true
+
+		SetSpeedFromX(
+			Input.Position.X
+		)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+	if not SliderDragging then
+		return
+	end
+
+	if Input.UserInputType
+			== Enum.UserInputType.MouseMovement
+		or Input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		SetSpeedFromX(
+			Input.Position.X
+		)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(Input)
+	if Input.UserInputType
+			== Enum.UserInputType.MouseButton1
+		or Input.UserInputType
+			== Enum.UserInputType.Touch then
+
+		SliderDragging = false
+	end
+end)
+
+--==================================================
+-- CUSTOM SHEET LABEL
+--==================================================
+
+local SheetLabel =
+	Instance.new("TextLabel")
+
+SheetLabel.Position =
+	UDim2.fromOffset(
+		10,
+		259
+	)
+
+SheetLabel.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		27
+	)
+
+SheetLabel.BackgroundTransparency = 1
+
+SheetLabel.Text =
+	"Custom Sheet"
+
+SheetLabel.TextColor3 =
+	Color3.fromRGB(
+		230,
+		231,
+		235
+	)
+
+SheetLabel.Font =
+	Enum.Font.GothamBold
+
+SheetLabel.TextSize = 13
+
+SheetLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+SheetLabel.ZIndex = 2
+SheetLabel.Parent = Main
+
+--==================================================
+-- SCROLLING SHEET AREA
+--==================================================
+
+local SheetScroll =
+	Instance.new("ScrollingFrame")
+
+SheetScroll.Position =
+	UDim2.fromOffset(
+		10,
+		288
+	)
+
+SheetScroll.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		220
+	)
+
+SheetScroll.BackgroundColor3 =
+	Color3.fromRGB(
+		30,
+		31,
+		36
+	)
+
+SheetScroll.BorderSizePixel = 0
+
+SheetScroll.ScrollBarThickness = 5
+
+SheetScroll.CanvasSize =
+	UDim2.new(
+		0,
+		0,
+		0,
+		220
+	)
+
+SheetScroll.AutomaticCanvasSize =
+	Enum.AutomaticSize.Y
+
+SheetScroll.ZIndex = 2
+SheetScroll.Parent = Main
+
+Instance.new(
+	"UICorner",
+	SheetScroll
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+--==================================================
+-- NOTES BOX
+--==================================================
+
+local NotesBox =
+	Instance.new("TextBox")
+
+NotesBox.Position =
+	UDim2.fromOffset(
+		0,
+		0
+	)
+
+NotesBox.Size =
+	UDim2.new(
+		1,
+		-8,
+		0,
+		220
+	)
+
+NotesBox.AutomaticSize =
+	Enum.AutomaticSize.Y
+
+NotesBox.BackgroundTransparency = 1
+
+NotesBox.Text = ""
+
+NotesBox.PlaceholderText = [[Paste your notes here...
+
+Example:
+
+[*S]-G * [9f] [6G] [$d] 9
+[*S] 7 [6a] [*S] [$p] % [6a] [7s]
+[*S]-p 6 [%O] [$p] [4a] S]]
+
+NotesBox.ClearTextOnFocus = false
+
+NotesBox.MultiLine = true
+NotesBox.TextWrapped = true
+
+NotesBox.TextColor3 =
+	Color3.fromRGB(
+		245,
+		245,
+		248
+	)
+
+NotesBox.PlaceholderColor3 =
+	Color3.fromRGB(
+		125,
+		127,
+		136
+	)
+
+NotesBox.Font =
+	Enum.Font.Code
+
+NotesBox.TextSize = 13
+
+NotesBox.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+NotesBox.TextYAlignment =
+	Enum.TextYAlignment.Top
+
+NotesBox.ZIndex = 3
+NotesBox.Parent = SheetScroll
+
+local NotesPadding =
+	Instance.new("UIPadding")
+
+NotesPadding.PaddingLeft =
+	UDim.new(0, 9)
+
+NotesPadding.PaddingRight =
+	UDim.new(0, 9)
+
+NotesPadding.PaddingTop =
+	UDim.new(0, 9)
+
+NotesPadding.PaddingBottom =
+	UDim.new(0, 9)
+
+NotesPadding.Parent =
+	NotesBox
+
+--==================================================
+-- BOTTOM INFO
+--==================================================
+
+local Info =
+	Instance.new("TextLabel")
+
+Info.Position =
+	UDim2.fromOffset(
+		10,
+		517
+	)
+
+Info.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		42
+	)
+
+Info.BackgroundTransparency = 1
+
+Info.Text =
+	"[9f] chord  •  * $ % shifted keys  •  uppercase = Shift  •  - = timing gap"
+
+Info.TextWrapped = true
+
+Info.TextColor3 =
+	Color3.fromRGB(
+		145,
+		147,
+		155
+	)
+
+Info.Font =
+	Enum.Font.Gotham
+
+Info.TextSize = 11
+
+Info.ZIndex = 2
+Info.Parent = Main
+
+--==================================================
+-- STOP
+--==================================================
+
+local function StopPlayback()
+	Playing = false
+
+	PlaySession += 1
+
+	ReleaseEverything()
+
+	SetStatus(
+		"Stopped."
+	)
+end
+
+--==================================================
+-- PLAY
+--==================================================
+
+local function StartPlayback()
+	if typeof(keypress) ~= "function"
+		or typeof(keyrelease) ~= "function" then
+
+		SetStatus(
+			"keypress/keyrelease unavailable."
+		)
+
+		return
+	end
+
+	-- Blank tempo = default.
+	if TempoBox.Text == "" then
+		CurrentTempo =
+			DEFAULT_TEMPO
+	else
+		local EnteredTempo =
+			tonumber(
+				TempoBox.Text
+			)
+
+		if EnteredTempo then
+			CurrentTempo =
+				math.clamp(
+					EnteredTempo,
+					MIN_TEMPO,
+					MAX_TEMPO
+				)
+		else
+			CurrentTempo =
+				DEFAULT_TEMPO
+		end
+	end
+
+	local Events =
+		ParseSheet(
+			NotesBox.Text
+		)
+
+	if #Events == 0 then
+		SetStatus(
+			"No playable notes found."
+		)
+
+		return
+	end
+
+	-- Restart cleanly if already playing.
+	if Playing then
+		Playing = false
+
+		PlaySession += 1
+
+		ReleaseEverything()
+
+		task.wait()
+	end
+
+	Playing = true
+
+	PlaySession += 1
+
+	local Session =
+		PlaySession
+
+	SetStatus(
+		string.format(
+			"Starting in 1 second • %d BPM • %.2fx",
+			math.floor(
+				CurrentTempo + 0.5
+			),
+			SpeedMultiplier
+		)
+	)
+
+	task.spawn(function()
+		-- Give time to focus Roblox.
+		task.wait(1)
+
+		if not Playing
+			or Session ~= PlaySession then
+
+			return
+		end
+
+		for Index, Event in ipairs(Events) do
+			if not Playing
+				or Session ~= PlaySession then
+
+				break
+			end
+
+			SetStatus(
+				string.format(
+					"Playing %d/%d • %d BPM • %.2fx",
+					Index,
+					#Events,
+
+					math.floor(
+						CurrentTempo + 0.5
+					),
+
+					SpeedMultiplier
+				)
+			)
+
+			--======================================
+			-- NOTE
+			--======================================
+
+			if Event.Type == "Note" then
+				local Success =
+					PlaySingle(
+						Event.Key,
+						Session
+					)
+
+				if not Success then
+					break
+				end
+
+				if not DynamicWait(
+					1 - HOLD_PORTION,
+					Session
+				) then
+					break
+				end
+
+			--======================================
+			-- CHORD
+			--======================================
+
+			elseif Event.Type == "Chord" then
+				local Success =
+					PlayChord(
+						Event.Keys,
+						Session
+					)
+
+				if not Success then
+					break
+				end
+
+				if not DynamicWait(
+					1 - HOLD_PORTION,
+					Session
+				) then
+					break
+				end
+
+			--======================================
+			-- REST
+			--======================================
+
+			elseif Event.Type == "Rest" then
+				if not DynamicWait(
+					Event.Steps,
+					Session
+				) then
+
+					break
+				end
+			end
+		end
+
+		if Session == PlaySession then
+			Playing = false
+
+			ReleaseEverything()
+
+			SetStatus(
+				"Finished."
+			)
+		end
+	end)
+end
+
+--==================================================
+-- CONNECTIONS
+--==================================================
+
+PlayButton.MouseButton1Click:Connect(
+	StartPlayback
+)
+
+StopButton.MouseButton1Click:Connect(
+	StopPlayback
+)
+
+Close.MouseButton1Click:Connect(function()
+	StopPlayback()
+	GUI:Destroy()
+end)
