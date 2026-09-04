@@ -1,0 +1,1543 @@
+--// Owner Perfect AutoPlayer V4
+--// Internal-input, ordered-lane, lag-spike resistant version
+--// Whoever executes this script is considered the owner.
+--// Calls the game's own KeyPress / KeyLift handlers; no physical keys.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+--==================================================
+-- CONFIG
+--==================================================
+
+local Enabled = false
+
+-- How far ahead we begin predicting.
+local PredictionLookahead = 0.15
+
+-- These are the exact windows used by NoteInput in the supplied game script.
+local PerfectWindow = 0.0165
+local ValidHitWindow = 0.1305
+
+local TapHoldSeconds = 0.012
+local HitVerifySeconds = 0.040
+
+local DetectedSide = nil
+local LastDetectedSide = nil
+local ActiveMatchFrame = nil
+
+local InternalKeyPress = nil
+local InternalKeyLift = nil
+local InternalInputOwner = nil
+
+local HitCount = 0
+local SavedCount = 0
+
+--==================================================
+-- NOTE STATE
+--==================================================
+
+local NoteStates = setmetatable({}, {
+	__mode = "k"
+})
+
+local PreviousSamples = setmetatable({}, {
+	__mode = "k"
+})
+
+local ScheduleTokens = setmetatable({}, {
+	__mode = "k"
+})
+
+local ScheduledTimes = setmetatable({}, {
+	__mode = "k"
+})
+
+local LaneHeld = {
+	false,
+	false,
+	false,
+	false
+}
+
+-- Identifies which press currently owns each lane. Delayed releases from an
+-- older note are ignored after a newer note takes ownership.
+local LanePressToken = {
+	0,
+	0,
+	0,
+	0
+}
+
+local LaneInputObject = {
+	nil,
+	nil,
+	nil,
+	nil
+}
+
+local LanePendingNote = {
+	nil,
+	nil,
+	nil,
+	nil
+}
+
+local LaneScheduledNote = {
+	nil,
+	nil,
+	nil,
+	nil
+}
+
+--==================================================
+-- INTERNAL GAME INPUT RESOLVER
+--==================================================
+
+local function TryInputEnvironment(Environment, Owner)
+
+	if type(Environment) ~= "table" then
+		return false
+	end
+
+	local KeyPressFunction =
+		rawget(Environment, "KeyPress")
+
+	local KeyLiftFunction =
+		rawget(Environment, "KeyLift")
+
+	local NoteInputFunction =
+		rawget(Environment, "NoteInput")
+
+	if type(KeyPressFunction) == "function"
+		and type(KeyLiftFunction) == "function"
+		and type(NoteInputFunction) == "function" then
+
+		InternalKeyPress = KeyPressFunction
+		InternalKeyLift = KeyLiftFunction
+		InternalInputOwner = Owner
+		return true
+	end
+
+	return false
+end
+
+local function ResolveInternalInput()
+
+	if type(InternalKeyPress) == "function"
+		and type(InternalKeyLift) == "function" then
+
+		return true
+	end
+
+	InternalKeyPress = nil
+	InternalKeyLift = nil
+	InternalInputOwner = nil
+
+	-- Some executors expose the environment of the LocalScript that required
+	-- the gameplay module.
+	if type(getsenv) == "function" then
+
+		for _, Object in ipairs(PlayerGui:GetDescendants()) do
+
+			if Object:IsA("LocalScript") then
+
+				local Success, Environment =
+					pcall(getsenv, Object)
+
+				if Success
+					and TryInputEnvironment(Environment, Object) then
+
+					return true
+				end
+			end
+		end
+	end
+
+	-- The supplied source is a ModuleScript. Its environment can normally be
+	-- recovered from one of its live closures even when getsenv cannot see it.
+	if type(getgc) == "function"
+		and type(getfenv) == "function" then
+
+		local Success, Objects =
+			pcall(getgc, true)
+
+		if Success
+			and type(Objects) == "table" then
+
+			local SeenEnvironments = {}
+			local NamedFunctions = {}
+			local NamedSources = {}
+
+			for _, Object in ipairs(Objects) do
+
+				if type(Object) == "table"
+					and not SeenEnvironments[Object] then
+
+					SeenEnvironments[Object] = true
+
+					if TryInputEnvironment(Object, Object) then
+						return true
+					end
+
+				elseif type(Object) == "function" then
+
+					if type(debug) == "table"
+						and type(debug.getinfo) == "function" then
+
+						local GotInfo, Info =
+							pcall(debug.getinfo, Object)
+
+						if GotInfo
+							and type(Info) == "table"
+							and (
+								Info.name == "KeyPress"
+								or Info.name == "KeyLift"
+								or Info.name == "NoteInput"
+							) then
+
+							NamedFunctions[Info.name] = Object
+							NamedSources[Info.name] = Info.source
+						end
+					end
+
+					local GotEnvironment, Environment =
+						pcall(getfenv, Object)
+
+					if GotEnvironment
+						and type(Environment) == "table"
+						and not SeenEnvironments[Environment] then
+
+						SeenEnvironments[Environment] = true
+
+						if TryInputEnvironment(Environment, Object) then
+							return true
+						end
+					end
+				end
+			end
+
+			local SameSource =
+				NamedSources.KeyPress == nil
+				or (
+					NamedSources.KeyPress == NamedSources.KeyLift
+					and NamedSources.KeyPress == NamedSources.NoteInput
+				)
+
+			if type(NamedFunctions.KeyPress) == "function"
+				and type(NamedFunctions.KeyLift) == "function"
+				and type(NamedFunctions.NoteInput) == "function"
+				and SameSource then
+
+				InternalKeyPress = NamedFunctions.KeyPress
+				InternalKeyLift = NamedFunctions.KeyLift
+				InternalInputOwner = NamedFunctions.NoteInput
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+--==================================================
+-- FIND MATCH FRAME
+--==================================================
+
+local function FindMatchFrame()
+
+	if ActiveMatchFrame
+		and ActiveMatchFrame.Parent
+		and ActiveMatchFrame:FindFirstChild("KeySync1")
+		and ActiveMatchFrame:FindFirstChild("KeySync2") then
+
+		return ActiveMatchFrame
+	end
+
+	for _, Object in ipairs(
+		PlayerGui:GetDescendants()
+	) do
+
+		if Object.Name == "MatchFrame"
+			and Object:FindFirstChild("KeySync1")
+			and Object:FindFirstChild("KeySync2") then
+
+			ActiveMatchFrame = Object
+			LastDetectedSide = nil
+			InternalKeyPress = nil
+			InternalKeyLift = nil
+			InternalInputOwner = nil
+
+			return Object
+		end
+	end
+
+	ActiveMatchFrame = nil
+	LastDetectedSide = nil
+
+	return nil
+end
+
+--==================================================
+-- INPUT CONFIG
+--==================================================
+
+local function GetInputs()
+
+	if _G.Settings
+		and type(_G.Settings.Inputs) == "table" then
+
+		return _G.Settings.Inputs
+	end
+
+	-- Fallback
+	return {
+		"A",
+		"S",
+		"W",
+		"D"
+	}
+end
+
+local function GetLaneKeyName(Lane)
+
+	local Inputs = GetInputs()
+
+	local Name = Inputs[Lane]
+
+	if typeof(Name) == "EnumItem" then
+		Name = Name.Name
+	end
+
+	if type(Name) ~= "string" then
+		return nil
+	end
+
+	return Name
+end
+
+local function GetLaneKeyCode(Lane)
+
+	local Name =
+		GetLaneKeyName(Lane)
+
+	if not Name then
+		return nil
+	end
+
+	local Success, KeyCode =
+		pcall(function()
+			return Enum.KeyCode[Name]
+		end)
+
+	if Success
+		and KeyCode then
+
+		return KeyCode
+	end
+
+	Success, KeyCode =
+		pcall(function()
+			return Enum.KeyCode[string.upper(Name)]
+		end)
+
+	if Success then
+		return KeyCode
+	end
+
+	return nil
+end
+
+--==================================================
+-- KEYBOARD INPUT
+--==================================================
+
+local function PressLane(Lane)
+
+	if not ResolveInternalInput() then
+		return false, nil
+	end
+
+	local KeyCode =
+		GetLaneKeyCode(Lane)
+
+	if not KeyCode then
+		return false, nil
+	end
+
+	local InputObject = {
+		UserInputType = Enum.UserInputType.Keyboard,
+		KeyCode = KeyCode
+	}
+
+	-- A new press owns the lane from this point onward. This invalidates every
+	-- delayed release that belongs to an older tap or hold.
+	LanePressToken[Lane] += 1
+	local Token = LanePressToken[Lane]
+
+	-- Retrigger immediately. Yielding here moves the hit a full frame late.
+	if LaneHeld[Lane] then
+
+		local OldInput =
+			LaneInputObject[Lane] or InputObject
+
+		pcall(
+			InternalKeyLift,
+			OldInput,
+			false
+		)
+
+		LaneHeld[Lane] = false
+	end
+
+	local Success =
+		pcall(
+			InternalKeyPress,
+			InputObject,
+			false
+		)
+
+	if Success then
+		LaneHeld[Lane] = true
+		LaneInputObject[Lane] = InputObject
+	end
+
+	return Success, Token
+end
+
+local function ReleaseLane(Lane, ExpectedToken)
+
+	if ExpectedToken
+		and LanePressToken[Lane] ~= ExpectedToken then
+
+		return false
+	end
+
+	local InputObject =
+		LaneInputObject[Lane]
+
+	if not InputObject
+		or type(InternalKeyLift) ~= "function" then
+
+		LaneHeld[Lane] = false
+		LaneInputObject[Lane] = nil
+		return false
+	end
+
+	pcall(
+		InternalKeyLift,
+		InputObject,
+		false
+	)
+
+	LaneHeld[Lane] = false
+	LaneInputObject[Lane] = nil
+	return true
+end
+
+local function ReleaseAll()
+
+	for Lane = 1, 4 do
+		LanePressToken[Lane] += 1
+		ReleaseLane(Lane)
+	end
+end
+
+--==================================================
+-- NOTE IDENTIFICATION
+--==================================================
+
+local function IsRealPlayerNote(Object)
+
+	if not Object:IsA("GuiObject") then
+		return false
+	end
+
+	if Object:GetAttribute("Type")
+		~= "Note" then
+
+		return false
+	end
+
+	-- Normal player-created notes have this.
+	if Object:GetAttribute("HoldHead")
+		~= true then
+
+		return false
+	end
+
+	return true
+end
+
+local function GetLaneTarget(NotesFolder)
+
+	local Candidates = {}
+
+	for _, Note in ipairs(NotesFolder:GetChildren()) do
+
+		if IsRealPlayerNote(Note) then
+			Candidates[#Candidates + 1] = Note
+		end
+	end
+
+	table.sort(Candidates, function(A, B)
+
+		local TimeA =
+			tonumber(A:GetAttribute("T"))
+			or tonumber(A.Name)
+			or math.huge
+
+		local TimeB =
+			tonumber(B:GetAttribute("T"))
+			or tonumber(B.Name)
+			or math.huge
+
+		if TimeA == TimeB then
+
+			local NameA = tonumber(A.Name)
+			local NameB = tonumber(B.Name)
+
+			if NameA
+				and NameB then
+
+				return NameA < NameB
+			end
+
+			return tostring(A.Name) < tostring(B.Name)
+		end
+
+		return TimeA < TimeB
+	end)
+
+	local First = Candidates[1]
+	local Second = Candidates[2]
+
+	-- This mirrors NoteInput: only the current and next lane notes are eligible,
+	-- and the closer of those two is consumed.
+	if Second
+		and (
+			not First
+			or math.abs(Second.Position.Y.Scale)
+				< math.abs(First.Position.Y.Scale)
+		) then
+
+		return Second
+	end
+
+	return First
+end
+
+--==================================================
+-- NOTES FOLDER
+--==================================================
+
+local function GetNotesFolder(
+	MatchFrame,
+	Side,
+	Lane
+)
+
+	local KeySync =
+		MatchFrame:FindFirstChild(
+			"KeySync" .. Side
+		)
+
+	if not KeySync then
+		return nil
+	end
+
+	local Arrow =
+		KeySync:FindFirstChild(
+			"Arrow" .. Lane
+		)
+
+	if not Arrow then
+		return nil
+	end
+
+	return Arrow:FindFirstChild(
+		"Notes"
+	)
+end
+
+--==================================================
+-- SIDE DETECTION
+--==================================================
+
+local function CountPlayerNotes(
+	MatchFrame,
+	Side
+)
+
+	local Count = 0
+
+	for Lane = 1, 4 do
+
+		local Notes =
+			GetNotesFolder(
+				MatchFrame,
+				Side,
+				Lane
+			)
+
+		if Notes then
+
+			for _, Note in ipairs(
+				Notes:GetChildren()
+			) do
+
+				if IsRealPlayerNote(Note) then
+					Count += 1
+				end
+			end
+		end
+	end
+
+	return Count
+end
+
+local function DetectSide(MatchFrame)
+
+	local Side1 =
+		CountPlayerNotes(
+			MatchFrame,
+			1
+		)
+
+	local Side2 =
+		CountPlayerNotes(
+			MatchFrame,
+			2
+		)
+
+	if Side1 > 0
+		and Side2 == 0 then
+
+		LastDetectedSide = 1
+		return 1
+	end
+
+	if Side2 > 0
+		and Side1 == 0 then
+
+		LastDetectedSide = 2
+		return 2
+	end
+
+	-- CreateNote marks local-player note heads with HoldHead. CreateAutoNote,
+	-- used for the opponent, does not. Keep the last side through chart gaps.
+	return LastDetectedSide
+end
+
+--==================================================
+-- HOLD FRAME
+--==================================================
+
+local function FindHoldFrame(
+	NotesFolder,
+	Note
+)
+
+	if not NotesFolder
+		or not Note then
+
+		return nil
+	end
+
+	local Hold =
+		NotesFolder:FindFirstChild(
+			"Hold_" .. Note.Name
+		)
+
+	if Hold
+		and Hold:IsA("GuiObject")
+		and Hold:GetAttribute("LNHold")
+			== true then
+
+		return Hold
+	end
+
+	return nil
+end
+
+--==================================================
+-- HOLD RELEASE HANDLER
+--==================================================
+
+local function HandleHold(
+	Lane,
+	Note,
+	HoldFrame,
+	PressToken
+)
+
+	-- Normal tap note
+	if not HoldFrame then
+
+		task.spawn(function()
+
+			local ReleaseAt =
+				os.clock() + TapHoldSeconds
+
+			while Enabled
+				and LaneHeld[Lane]
+				and LanePressToken[Lane] == PressToken
+				and os.clock() < ReleaseAt do
+
+				RunService.RenderStepped:Wait()
+			end
+
+			ReleaseLane(Lane, PressToken)
+		end)
+
+		return
+	end
+
+	-- Long note
+	task.spawn(function()
+
+		local AcceptBy =
+			os.clock() + HitVerifySeconds
+
+		while Enabled
+			and LaneHeld[Lane]
+			and LanePressToken[Lane] == PressToken
+			and Note
+			and Note.Parent
+			and os.clock() < AcceptBy do
+
+			RunService.RenderStepped:Wait()
+		end
+
+		-- The internal handler destroys the head and reparents the hold frame
+		-- synchronously when it accepts the hit.
+		if Note
+			and Note.Parent then
+
+			ReleaseLane(Lane, PressToken)
+			return
+		end
+
+		local Direction = 1
+
+		if _G.Settings
+			and tonumber(
+				_G.Settings.Direction
+			) then
+
+			Direction =
+				tonumber(
+					_G.Settings.Direction
+				)
+		end
+
+		local Started =
+			os.clock()
+
+		while Enabled
+			and LaneHeld[Lane]
+			and LanePressToken[Lane] == PressToken
+			and HoldFrame
+			and HoldFrame.Parent do
+
+			local Size =
+				math.abs(
+					HoldFrame.Size.Y.Scale
+				)
+
+			local Position =
+				HoldFrame.Position.Y.Scale
+				* Direction
+
+			-- Same general condition used by
+			-- the game's hold completion logic.
+			if Size + Position <= 1.5 then
+				break
+			end
+
+			-- Safety against bad/stuck holds.
+			if os.clock() - Started > 30 then
+				break
+			end
+
+			RunService.RenderStepped:Wait()
+		end
+
+		ReleaseLane(Lane, PressToken)
+	end)
+end
+
+--==================================================
+-- ACTUAL HIT
+--==================================================
+
+local function CancelNoteSchedule(Note)
+
+	if not Note then
+		return
+	end
+
+	ScheduleTokens[Note] =
+		(ScheduleTokens[Note] or 0) + 1
+
+	ScheduledTimes[Note] = nil
+
+	if NoteStates[Note] == "scheduled" then
+		NoteStates[Note] = nil
+	end
+end
+
+local function HitNote(
+	Lane,
+	Note,
+	NotesFolder,
+	WasEmergency
+)
+
+	if not Enabled then
+		return false
+	end
+
+	if not Note
+		or not Note.Parent then
+
+		return false
+	end
+
+	if LanePendingNote[Lane] then
+		return false
+	end
+
+	local State =
+		NoteStates[Note]
+
+	if State == "hit"
+		or State == "attempted" then
+
+		return false
+	end
+
+	-- Invalidate the predictor before entering the game's input handler.
+	CancelNoteSchedule(Note)
+
+	if LaneScheduledNote[Lane] == Note then
+		LaneScheduledNote[Lane] = nil
+	end
+
+	local HoldFrame =
+		FindHoldFrame(
+			NotesFolder,
+			Note
+		)
+
+	local Success, PressToken =
+		PressLane(Lane)
+
+	if Success then
+
+		NoteStates[Note] = "attempted"
+
+		LanePendingNote[Lane] = {
+			Note = Note,
+			NotesFolder = NotesFolder,
+			AttemptAt = os.clock(),
+			WasEmergency = WasEmergency,
+			PressToken = PressToken
+		}
+
+		HandleHold(
+			Lane,
+			Note,
+			HoldFrame,
+			PressToken
+		)
+
+		return true
+	end
+
+	-- Let it retry if the internal call itself failed.
+	NoteStates[Note] = nil
+
+	return false
+end
+
+--==================================================
+-- SCHEDULE PREDICTED HIT
+--==================================================
+
+local function ScheduleNote(
+	Lane,
+	Note,
+	NotesFolder,
+	CurrentPosition,
+	PreviousPosition,
+	SampleDelta,
+	VelocityOverride
+)
+
+	if NoteStates[Note] == "hit"
+		or NoteStates[Note] == "attempted" then
+
+		return
+	end
+
+	if not PreviousPosition then
+		return
+	end
+
+	if SampleDelta <= 0 then
+		return
+	end
+
+	local Velocity =
+		VelocityOverride
+		or (
+			CurrentPosition
+			- PreviousPosition
+		)
+		/ SampleDelta
+
+	if math.abs(Velocity)
+		< 0.00001 then
+
+		return
+	end
+
+	-- Estimate exactly when Y.Scale becomes 0.
+	local TimeToZero =
+		-CurrentPosition
+		/ Velocity
+
+	-- Moving away / already too far past.
+	if TimeToZero < -ValidHitWindow then
+		return
+	end
+
+	-- Don't schedule until reasonably close.
+	if TimeToZero
+		> PredictionLookahead then
+
+		return
+	end
+
+	local Now = os.clock()
+	local HitAt =
+		Now + TimeToZero
+
+	local ExistingTime =
+		ScheduledTimes[Note]
+
+	-- Keep a stable deadline, but replace it when a newer motion sample shows
+	-- meaningful drift (scroll-speed change or dropped frame).
+	if NoteStates[Note] == "scheduled"
+		and ExistingTime
+		and math.abs(ExistingTime - HitAt) <= 0.003 then
+
+		return
+	end
+
+	local Token =
+		(ScheduleTokens[Note] or 0) + 1
+
+	ScheduleTokens[Note] = Token
+	ScheduledTimes[Note] = HitAt
+	NoteStates[Note] = "scheduled"
+	LaneScheduledNote[Lane] = Note
+
+	local function Fire()
+
+		if ScheduleTokens[Note] ~= Token then
+			return
+		end
+
+		if LaneScheduledNote[Lane] ~= Note then
+			return
+		end
+
+		if not Enabled then
+			NoteStates[Note] = nil
+			ScheduledTimes[Note] = nil
+			return
+		end
+
+		if not Note
+			or not Note.Parent then
+
+			NoteStates[Note] = nil
+			ScheduledTimes[Note] = nil
+			return
+		end
+
+		if NoteStates[Note] == "hit" then
+			return
+		end
+
+		local Remaining =
+			(ScheduledTimes[Note] or 0) - os.clock()
+
+		if Remaining > 0.001 then
+			task.delay(Remaining, Fire)
+			return
+		end
+
+		HitNote(
+			Lane,
+			Note,
+			NotesFolder,
+			false
+		)
+	end
+
+	task.delay(
+		math.max(0, HitAt - Now),
+		Fire
+	)
+end
+
+local function CancelScheduledNotes()
+
+	for Note, State in pairs(NoteStates) do
+
+		if State == "scheduled" then
+			ScheduleTokens[Note] =
+				(ScheduleTokens[Note] or 0) + 1
+
+			ScheduledTimes[Note] = nil
+			NoteStates[Note] = nil
+		end
+	end
+
+	for Lane = 1, 4 do
+		LaneScheduledNote[Lane] = nil
+	end
+end
+
+local function ResetPendingLanes()
+
+	for Lane = 1, 4 do
+
+		local Pending = LanePendingNote[Lane]
+
+		if Pending
+			and Pending.Note
+			and NoteStates[Pending.Note] == "attempted" then
+
+			NoteStates[Pending.Note] = nil
+		end
+
+		LanePendingNote[Lane] = nil
+	end
+end
+
+--==================================================
+-- XEN UI BRIDGE
+--==================================================
+-- The gameplay engine above and the toggle/render/cleanup logic below are
+-- retained from the working script. These proxy objects replace only the old
+-- standalone ScreenGui, allowing Xen to own all visible UI.
+
+local ChangedBindable =
+	Instance.new("BindableEvent")
+
+local Destroyed = false
+local ChangeQueued = false
+
+local function QueueChanged()
+
+	if Destroyed
+		or ChangeQueued then
+
+		return
+	end
+
+	ChangeQueued = true
+
+	task.defer(function()
+
+		ChangeQueued = false
+
+		if not Destroyed then
+			ChangedBindable:Fire()
+		end
+	end)
+end
+
+local function CreateSignal()
+
+	local Callback = nil
+
+	return {
+		Connect = function(_, Handler)
+
+			Callback = Handler
+
+			return {
+				Disconnect = function()
+
+					Callback = nil
+				end
+			}
+		end,
+
+		Fire = function(_, ...)
+
+			if Callback then
+				return Callback(...)
+			end
+		end
+	}
+end
+
+local function CreateTextBridge(InitialText)
+
+	local StoredText = InitialText
+
+	return setmetatable({}, {
+		__index = function(Object, Key)
+
+			if Key == "Text" then
+				return StoredText
+			end
+
+			return rawget(Object, Key)
+		end,
+
+		__newindex = function(Object, Key, Value)
+
+			if Key == "Text" then
+
+				if StoredText ~= Value then
+					StoredText = Value
+					QueueChanged()
+				end
+
+				return
+			end
+
+			rawset(Object, Key, Value)
+		end
+	})
+end
+
+local Status =
+	CreateTextBridge(
+		"Auto Perfect: OFF"
+	)
+
+local Toggle =
+	CreateTextBridge(
+		"ENABLE AUTO PERFECT"
+	)
+
+Toggle.MouseButton1Click =
+	CreateSignal()
+
+local SideButton =
+	CreateTextBridge(
+		"INTERNAL INPUT: SEARCHING (CLICK TO RETRY)"
+	)
+
+SideButton.MouseButton1Click =
+	CreateSignal()
+
+local Info =
+	CreateTextBridge(
+		"Waiting for match..."
+	)
+
+local Close =
+	CreateTextBridge("Close")
+
+Close.MouseButton1Click =
+	CreateSignal()
+
+local GUI = {}
+
+function GUI:Destroy()
+
+	Destroyed = true
+
+	task.defer(function()
+		ChangedBindable:Destroy()
+	end)
+end
+
+local function UpdateSideButton()
+
+	if type(InternalKeyPress) == "function"
+		and type(InternalKeyLift) == "function" then
+
+		SideButton.Text =
+			"INTERNAL INPUT: READY"
+	else
+		SideButton.Text =
+			"INTERNAL INPUT: SEARCHING (CLICK TO RETRY)"
+	end
+end
+
+UpdateSideButton()
+
+SideButton.MouseButton1Click:Connect(function()
+
+	ResolveInternalInput()
+	UpdateSideButton()
+end)
+
+local Controller = {
+	Id = "owner-perfect-player-v4",
+	Name = "Owner Perfect Player V4",
+	Changed = ChangedBindable.Event
+}
+
+function Controller:GetState()
+
+	return {
+		Enabled = Enabled,
+		Destroyed = Destroyed,
+		Status = Status.Text,
+		ToggleLabel = Toggle.Text,
+		InputStatus = SideButton.Text,
+		Info = Info.Text,
+		DetectedSide = DetectedSide,
+		HitCount = HitCount,
+		SavedCount = SavedCount,
+		PredictionLookahead = PredictionLookahead,
+		InternalInputReady =
+			type(InternalKeyPress) == "function"
+			and type(InternalKeyLift) == "function"
+	}
+end
+
+function Controller:SetEnabled(NewEnabled)
+
+	NewEnabled = NewEnabled == true
+
+	if Destroyed then
+		return false, "Controller has been destroyed."
+	end
+
+	if Enabled ~= NewEnabled then
+		Toggle.MouseButton1Click:Fire()
+	end
+
+	local State = self:GetState()
+
+	if State.Enabled ~= NewEnabled then
+		return false, State.Status
+	end
+
+	return true, State
+end
+
+function Controller:Toggle()
+
+	if Destroyed then
+		return false, "Controller has been destroyed."
+	end
+
+	Toggle.MouseButton1Click:Fire()
+	return true, self:GetState()
+end
+
+function Controller:RetryInternalInput()
+
+	if Destroyed then
+		return false, "Controller has been destroyed."
+	end
+
+	SideButton.MouseButton1Click:Fire()
+	return self:GetState().InternalInputReady, self:GetState()
+end
+
+function Controller:Destroy()
+
+	if not Destroyed then
+		Close.MouseButton1Click:Fire()
+	end
+end
+
+
+--==================================================
+-- TOGGLE LOGIC
+--==================================================
+
+Toggle.MouseButton1Click:Connect(function()
+
+	if not ResolveInternalInput() then
+
+		Status.Text =
+			"Internal game input was not found."
+
+		UpdateSideButton()
+
+		return
+	end
+
+	Enabled =
+		not Enabled
+
+	CancelScheduledNotes()
+	ResetPendingLanes()
+
+	for Note in pairs(PreviousSamples) do
+		PreviousSamples[Note] = nil
+	end
+
+	if Enabled then
+
+		Toggle.Text =
+			"DISABLE AUTO PERFECT"
+
+		Status.Text =
+			"Auto Perfect: ON"
+
+	else
+
+		Toggle.Text =
+			"ENABLE AUTO PERFECT"
+
+		Status.Text =
+			"Auto Perfect: OFF"
+
+		ReleaseAll()
+	end
+end)
+
+--==================================================
+-- MAIN RENDER LOOP
+--==================================================
+
+local RenderConnection
+
+RenderConnection =
+	RunService.RenderStepped:Connect(
+		function()
+
+			local MatchFrame =
+				FindMatchFrame()
+
+			if not MatchFrame then
+
+				DetectedSide = nil
+
+				Info.Text =
+					"No MatchFrame found.\n"
+					.. "Start a match first."
+
+				return
+			end
+
+			DetectedSide =
+				DetectSide(
+					MatchFrame
+				)
+
+			UpdateSideButton()
+
+			Info.Text =
+				"Side: "
+				.. tostring(
+					DetectedSide
+					or "waiting"
+				)
+
+				.. "\nInput: internal game handlers"
+
+				.. "\nConfirmed hits: "
+				.. HitCount
+
+				.. "   Emergency saves: "
+				.. SavedCount
+
+				.. "\nPrediction: "
+				.. math.floor(
+					PredictionLookahead
+					* 1000
+				)
+				.. "ms ahead"
+
+			if not Enabled
+				or not DetectedSide then
+
+				return
+			end
+
+			local Now = os.clock()
+
+			for Lane = 1, 4 do
+
+				local Notes =
+					GetNotesFolder(
+						MatchFrame,
+						DetectedSide,
+						Lane
+					)
+
+				if Notes then
+
+					local Pending =
+						LanePendingNote[Lane]
+
+					if Pending then
+
+						local Head = Pending.Note
+
+						if not Head
+							or not Head.Parent then
+
+							if Head then
+								NoteStates[Head] = "hit"
+							end
+							LanePendingNote[Lane] = nil
+							HitCount += 1
+
+							if Pending.WasEmergency then
+								SavedCount += 1
+							end
+
+						elseif Head.Parent ~= Pending.NotesFolder then
+
+							-- It moved to the game's Missed folder instead of being
+							-- consumed by NoteInput.
+							NoteStates[Head] = "hit"
+							LanePendingNote[Lane] = nil
+							ReleaseLane(Lane, Pending.PressToken)
+
+						elseif Now - Pending.AttemptAt
+							>= HitVerifySeconds then
+
+							-- The internal handler did not consume it. Release and let
+							-- the lane retry while it is still inside 130.5 ms.
+							NoteStates[Head] = nil
+							LanePendingNote[Lane] = nil
+							ReleaseLane(Lane, Pending.PressToken)
+						end
+					end
+
+					if not LanePendingNote[Lane] then
+
+						local Note = GetLaneTarget(Notes)
+						local OldScheduled = LaneScheduledNote[Lane]
+
+						if OldScheduled
+							and OldScheduled ~= Note then
+
+							CancelNoteSchedule(OldScheduled)
+							LaneScheduledNote[Lane] = nil
+						end
+
+						if Note
+							and NoteStates[Note] ~= "hit"
+							and NoteStates[Note] ~= "attempted" then
+
+							local Current = Note.Position.Y.Scale
+							local Previous = PreviousSamples[Note]
+							local Velocity
+							local SampleDelta
+
+							if Previous then
+
+								SampleDelta = Now - Previous.Time
+
+								if SampleDelta > 0 then
+
+									local InstantVelocity =
+										(Current - Previous.Position)
+										/ SampleDelta
+
+									if math.abs(InstantVelocity) >= 0.00001 then
+
+										if Previous.Velocity
+											and Previous.Velocity * InstantVelocity > 0 then
+
+											Velocity =
+												Previous.Velocity * 0.65
+												+ InstantVelocity * 0.35
+										else
+											Velocity = InstantVelocity
+										end
+									else
+										Velocity = Previous.Velocity
+									end
+								end
+							end
+
+							PreviousSamples[Note] = {
+								Position = Current,
+								Time = Now,
+								Velocity = Velocity
+							}
+
+							if Previous
+								and Velocity
+								and math.abs(Velocity) >= 0.00001 then
+
+								local TimeToZero = -Current / Velocity
+								local CrossedZero =
+									(
+										Previous.Position > 0
+										and Current <= 0
+									)
+									or
+									(
+										Previous.Position < 0
+										and Current >= 0
+									)
+
+								if CrossedZero
+									and math.abs(TimeToZero) <= ValidHitWindow then
+
+									HitNote(Lane, Note, Notes, true)
+
+								elseif math.abs(TimeToZero) <= PerfectWindow then
+
+									HitNote(Lane, Note, Notes, true)
+
+								else
+									ScheduleNote(
+										Lane,
+										Note,
+										Notes,
+										Current,
+										Previous.Position,
+										SampleDelta,
+										Velocity
+									)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	)
+
+--==================================================
+-- CLOSE
+--==================================================
+
+Close.MouseButton1Click:Connect(function()
+
+	Enabled = false
+
+	ReleaseAll()
+
+	CancelScheduledNotes()
+	ResetPendingLanes()
+
+	if RenderConnection then
+		RenderConnection:Disconnect()
+		RenderConnection = nil
+	end
+
+	GUI:Destroy()
+end)
+
+QueueChanged()
+
+return Controller
+
