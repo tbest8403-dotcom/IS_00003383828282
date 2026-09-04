@@ -14,6 +14,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- CONFIG
 --==================================================
 
+local ScriptVersion = "0.1.1"
 local Enabled = false
 
 -- How far ahead we begin predicting.
@@ -29,6 +30,8 @@ local HitVerifySeconds = 0.040
 local DetectedSide = nil
 local LastDetectedSide = nil
 local ActiveMatchFrame = nil
+local ActiveKeySync1 = nil
+local ActiveKeySync2 = nil
 
 local InternalKeyPress = nil
 local InternalKeyLift = nil
@@ -98,7 +101,19 @@ local LaneScheduledNote = {
 -- INTERNAL GAME INPUT RESOLVER
 --==================================================
 
-local function TryInputEnvironment(Environment, Owner)
+local function ClearInternalInput()
+
+	InternalKeyPress = nil
+	InternalKeyLift = nil
+	InternalInputOwner = nil
+end
+
+local function TryInputEnvironment(
+	Environment,
+	Owner,
+	RejectedKeyPress,
+	RejectedKeyLift
+)
 
 	if type(Environment) ~= "table" then
 		return false
@@ -115,7 +130,11 @@ local function TryInputEnvironment(Environment, Owner)
 
 	if type(KeyPressFunction) == "function"
 		and type(KeyLiftFunction) == "function"
-		and type(NoteInputFunction) == "function" then
+		and type(NoteInputFunction) == "function"
+		and not (
+			KeyPressFunction == RejectedKeyPress
+			and KeyLiftFunction == RejectedKeyLift
+		) then
 
 		InternalKeyPress = KeyPressFunction
 		InternalKeyLift = KeyLiftFunction
@@ -126,17 +145,31 @@ local function TryInputEnvironment(Environment, Owner)
 	return false
 end
 
-local function ResolveInternalInput()
+local function ResolveInternalInput(ForceRefresh)
 
-	if type(InternalKeyPress) == "function"
+	local PreviousKeyPress = InternalKeyPress
+	local PreviousKeyLift = InternalKeyLift
+	local PreviousInputOwner = InternalInputOwner
+
+	if not ForceRefresh
+		and type(InternalKeyPress) == "function"
 		and type(InternalKeyLift) == "function" then
 
 		return true
 	end
 
-	InternalKeyPress = nil
-	InternalKeyLift = nil
-	InternalInputOwner = nil
+	ClearInternalInput()
+
+	local RejectedKeyPress = nil
+	local RejectedKeyLift = nil
+
+	if ForceRefresh
+		and type(PreviousKeyPress) == "function"
+		and type(PreviousKeyLift) == "function" then
+
+		RejectedKeyPress = PreviousKeyPress
+		RejectedKeyLift = PreviousKeyLift
+	end
 
 	-- Some executors expose the environment of the LocalScript that required
 	-- the gameplay module.
@@ -150,7 +183,12 @@ local function ResolveInternalInput()
 					pcall(getsenv, Object)
 
 				if Success
-					and TryInputEnvironment(Environment, Object) then
+					and TryInputEnvironment(
+						Environment,
+						Object,
+						RejectedKeyPress,
+						RejectedKeyLift
+					) then
 
 					return true
 				end
@@ -180,7 +218,12 @@ local function ResolveInternalInput()
 
 					SeenEnvironments[Object] = true
 
-					if TryInputEnvironment(Object, Object) then
+					if TryInputEnvironment(
+						Object,
+						Object,
+						RejectedKeyPress,
+						RejectedKeyLift
+					) then
 						return true
 					end
 
@@ -214,7 +257,12 @@ local function ResolveInternalInput()
 
 						SeenEnvironments[Environment] = true
 
-						if TryInputEnvironment(Environment, Object) then
+						if TryInputEnvironment(
+							Environment,
+							Object,
+							RejectedKeyPress,
+							RejectedKeyLift
+						) then
 							return true
 						end
 					end
@@ -231,7 +279,11 @@ local function ResolveInternalInput()
 			if type(NamedFunctions.KeyPress) == "function"
 				and type(NamedFunctions.KeyLift) == "function"
 				and type(NamedFunctions.NoteInput) == "function"
-				and SameSource then
+				and SameSource
+				and not (
+					NamedFunctions.KeyPress == RejectedKeyPress
+					and NamedFunctions.KeyLift == RejectedKeyLift
+				) then
 
 				InternalKeyPress = NamedFunctions.KeyPress
 				InternalKeyLift = NamedFunctions.KeyLift
@@ -239,6 +291,18 @@ local function ResolveInternalInput()
 				return true
 			end
 		end
+	end
+
+	-- If the game has not published a replacement yet, keep the old pair as a
+	-- fallback. The next failed verification will force another refresh.
+	if ForceRefresh
+		and type(PreviousKeyPress) == "function"
+		and type(PreviousKeyLift) == "function" then
+
+		InternalKeyPress = PreviousKeyPress
+		InternalKeyLift = PreviousKeyLift
+		InternalInputOwner = PreviousInputOwner
+		return true
 	end
 
 	return false
@@ -255,6 +319,20 @@ local function FindMatchFrame()
 		and ActiveMatchFrame:FindFirstChild("KeySync1")
 		and ActiveMatchFrame:FindFirstChild("KeySync2") then
 
+		local KeySync1 =
+			ActiveMatchFrame:FindFirstChild("KeySync1")
+		local KeySync2 =
+			ActiveMatchFrame:FindFirstChild("KeySync2")
+
+		if KeySync1 ~= ActiveKeySync1
+			or KeySync2 ~= ActiveKeySync2 then
+
+			ActiveKeySync1 = KeySync1
+			ActiveKeySync2 = KeySync2
+			LastDetectedSide = nil
+			ClearInternalInput()
+		end
+
 		return ActiveMatchFrame
 	end
 
@@ -267,17 +345,20 @@ local function FindMatchFrame()
 			and Object:FindFirstChild("KeySync2") then
 
 			ActiveMatchFrame = Object
+			ActiveKeySync1 = Object:FindFirstChild("KeySync1")
+			ActiveKeySync2 = Object:FindFirstChild("KeySync2")
 			LastDetectedSide = nil
-			InternalKeyPress = nil
-			InternalKeyLift = nil
-			InternalInputOwner = nil
+			ClearInternalInput()
 
 			return Object
 		end
 	end
 
 	ActiveMatchFrame = nil
+	ActiveKeySync1 = nil
+	ActiveKeySync2 = nil
 	LastDetectedSide = nil
+	ClearInternalInput()
 
 	return nil
 end
@@ -400,6 +481,12 @@ local function PressLane(Lane)
 			InputObject,
 			false
 		)
+
+	if not Success then
+		-- A replaced controller can leave the old closure callable but invalid.
+		-- Drop it now so the next frame searches for the live handler pair.
+		ResolveInternalInput(true)
+	end
 
 	if Success then
 		LaneHeld[Lane] = true
@@ -1190,6 +1277,7 @@ end)
 local Controller = {
 	Id = "owner-perfect-player-v4",
 	Name = "Owner Perfect Player V4",
+	Version = ScriptVersion,
 	Changed = ChangedBindable.Event
 }
 
@@ -1198,6 +1286,7 @@ function Controller:GetState()
 	return {
 		Enabled = Enabled,
 		Destroyed = Destroyed,
+		Version = ScriptVersion,
 		Status = Status.Text,
 		ToggleLabel = Toggle.Text,
 		InputStatus = SideButton.Text,
@@ -1411,10 +1500,12 @@ RenderConnection =
 							>= HitVerifySeconds then
 
 							-- The internal handler did not consume it. Release and let
-							-- the lane retry while it is still inside 130.5 ms.
+							-- the lane retry while it is still inside 130.5 ms. Refresh the
+							-- cached closures so the retry can use a rebuilt controller.
 							NoteStates[Head] = nil
 							LanePendingNote[Lane] = nil
 							ReleaseLane(Lane, Pending.PressToken)
+							ResolveInternalInput(true)
 						end
 					end
 
@@ -1540,4 +1631,3 @@ end)
 QueueChanged()
 
 return Controller
-
