@@ -1,0 +1,1153 @@
+--[[
+    Xen supported module: BedWars Combat
+
+    The original gameplay routines are kept intact. Xen owns the visible
+    controls, while this module exposes state through a controller table.
+]]
+
+local SCRIPT_VERSION = "0.1.0"
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local inventories = ReplicatedStorage:WaitForChild("Inventories")
+
+local netManaged = ReplicatedStorage
+	:WaitForChild("rbxts_include")
+	:WaitForChild("node_modules")
+	:WaitForChild("@rbxts")
+	:WaitForChild("net")
+	:WaitForChild("out")
+	:WaitForChild("_NetManaged")
+
+local swordHitEvent = netManaged:WaitForChild("SwordHit")
+local projectileFire = netManaged:WaitForChild("ProjectileFire")
+local projectileHit = netManaged:WaitForChild("ProjectileHit")
+local setInvItem = netManaged:WaitForChild("SetInvItem")
+
+local blockNetManaged = ReplicatedStorage
+	:WaitForChild("rbxts_include")
+	:WaitForChild("node_modules")
+	:WaitForChild("@easy-games")
+	:WaitForChild("block-engine")
+	:WaitForChild("node_modules")
+	:WaitForChild("@rbxts")
+	:WaitForChild("net")
+	:WaitForChild("out")
+	:WaitForChild("_NetManaged")
+
+local damageBlock = blockNetManaged:WaitForChild("DamageBlock")
+
+-- These are real ModuleScripts, so they can be required directly without
+-- calling RuntimeLib.import from the client script.
+local gameAnimationUtil
+local animationType
+do
+	local ok, animationUtilModule, animationTypeModule = pcall(function()
+		local animationFolder = ReplicatedStorage:WaitForChild("TS"):WaitForChild("animation")
+		return require(animationFolder:WaitForChild("animation-util")),
+			require(animationFolder:WaitForChild("animation-type"))
+	end)
+	if ok then
+		gameAnimationUtil = animationUtilModule.GameAnimationUtil
+		animationType = animationTypeModule.AnimationType
+	else
+		warn("Sword animation modules could not be loaded:", animationUtilModule)
+	end
+end
+
+local knitClient
+do
+	local ok, knitModule = pcall(function()
+		return require(ReplicatedStorage
+			:WaitForChild("rbxts_include")
+			:WaitForChild("node_modules")
+			:WaitForChild("@easy-games")
+			:WaitForChild("knit")
+			:WaitForChild("src"))
+	end)
+	if ok then
+		knitClient = knitModule.KnitClient
+	else
+		warn("KnitClient could not be loaded for Auto Sprint:", knitModule)
+	end
+end
+
+local inventoryUtil
+do
+	local ok, inventoryModule = pcall(function()
+		return require(ReplicatedStorage
+			:WaitForChild("TS")
+			:WaitForChild("inventory")
+			:WaitForChild("inventory-util"))
+	end)
+	if ok then
+		inventoryUtil = inventoryModule.InventoryUtil
+	else
+		warn("InventoryUtil could not be loaded:", inventoryModule)
+	end
+end
+
+local blockEngine
+do
+	local ok, blockEngineModule = pcall(function()
+		return require(ReplicatedStorage
+			:WaitForChild("rbxts_include")
+			:WaitForChild("node_modules")
+			:WaitForChild("@easy-games")
+			:WaitForChild("block-engine")
+			:WaitForChild("out"))
+	end)
+	if ok then
+		blockEngine = blockEngineModule.BlockEngine
+	else
+		warn("BlockEngine could not be loaded for bed coordinates:", blockEngineModule)
+	end
+end
+
+assert(swordHitEvent:IsA("RemoteEvent"), "SwordHit must be a RemoteEvent")
+assert(projectileHit:IsA("RemoteEvent"), "ProjectileHit must be a RemoteEvent")
+assert(
+	damageBlock:IsA("RemoteFunction") or damageBlock:IsA("RemoteEvent"),
+	"DamageBlock must be a RemoteFunction or RemoteEvent"
+)
+assert(
+	setInvItem:IsA("RemoteFunction") or setInvItem:IsA("RemoteEvent"),
+	"SetInvItem must be a RemoteFunction or RemoteEvent"
+)
+assert(
+	projectileFire:IsA("RemoteFunction") or projectileFire:IsA("RemoteEvent"),
+	"ProjectileFire must be a RemoteFunction or RemoteEvent"
+)
+
+local SWORD_RANGE = 14
+local SWORD_ATTACKS_PER_SECOND = 60
+local SWORD_ATTACK_INTERVAL = 1 / SWORD_ATTACKS_PER_SECOND
+local MIN_BOW_RANGE = 10
+local MAX_BOW_RANGE = 150
+local bowRange = 150
+local BOW_COOLDOWN = 0.8
+local PROJECTILE_GRAVITY = 35
+local EQUIP_REFRESH_INTERVAL = 0.1
+local HIGHLIGHT_REFRESH_INTERVAL = 0.2
+local HIGHLIGHT_NAME = "CombatTargetHighlight"
+local SWORD_ANIMATION_INTERVAL = 1 / 9
+local SPRINT_REFRESH_INTERVAL = 0.2
+local AUTO_BRIDGE_INTERVAL = 0.05
+local BRIDGE_PROBE_DISTANCE = 3
+local BRIDGE_PROBE_DEPTH = 7
+local BED_BREAK_INTERVAL = 0.15
+local BED_DEFENSE_RADIUS = 18
+
+local swordEnabled = false
+local bowEnabled = false
+local sprintEnabled = false
+local bridgeEnabled = false
+local bedBreakEnabled = false
+local visualsEnabled = false
+local Destroyed = false
+
+local ChangedBindable = Instance.new("BindableEvent")
+
+local function getSprintController()
+	local controllers = knitClient and knitClient.Controllers
+	return controllers and controllers.SprintController
+end
+
+local function startAutoSprint()
+	local sprintController = getSprintController()
+	if not sprintController then
+		return false
+	end
+	local ok, err = pcall(function()
+		if not sprintController:isSprinting() then
+			sprintController:startSprinting()
+		end
+	end)
+	if not ok then
+		warn("Auto Sprint could not start:", err)
+	end
+	return ok
+end
+
+local function stopAutoSprint()
+	local sprintController = getSprintController()
+	if not sprintController then
+		return
+	end
+	local ok, err = pcall(function()
+		sprintController:stopSprinting(true)
+	end)
+	if not ok then
+		warn("Auto Sprint could not stop:", err)
+	end
+end
+
+local function getLivingCharacter(targetPlayer)
+	local character = targetPlayer.Character
+	if not character then
+		return nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or humanoid.Health <= 0 or not root then
+		return nil
+	end
+	return character, root
+end
+
+local function isEnemy(candidate)
+	if candidate == player then
+		return false
+	end
+	if player.Team ~= nil and candidate.Team ~= nil then
+		return player.Team ~= candidate.Team
+	end
+	return true
+end
+
+local function hasLineOfSight(ownCharacter, targetCharacter, origin, destination)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { ownCharacter }
+	params.IgnoreWater = true
+	local result = workspace:Raycast(origin, destination - origin, params)
+	return result == nil or result.Instance:IsDescendantOf(targetCharacter)
+end
+
+local function findNearestTarget(maximumRange)
+	local ownCharacter, ownRoot = getLivingCharacter(player)
+	if not ownCharacter then
+		return nil
+	end
+	local nearestCharacter
+	local nearestRoot
+	local nearestDistance = maximumRange
+	for _, candidate in Players:GetPlayers() do
+		if isEnemy(candidate) then
+			local character, root = getLivingCharacter(candidate)
+			if character and not character:FindFirstChildOfClass("ForceField") then
+				local distance = (root.Position - ownRoot.Position).Magnitude
+				if distance <= nearestDistance
+					and hasLineOfSight(ownCharacter, character, ownRoot.Position, root.Position) then
+					nearestCharacter = character
+					nearestRoot = root
+					nearestDistance = distance
+				end
+			end
+		end
+	end
+	return nearestCharacter, nearestRoot
+end
+
+local function updatePlayerHighlights()
+	for _, candidate in Players:GetPlayers() do
+		if candidate ~= player then
+			local character = candidate.Character
+			local highlight = character and character:FindFirstChild(HIGHLIGHT_NAME)
+			if highlight and not highlight:IsA("Highlight") then
+				highlight:Destroy()
+				highlight = nil
+			end
+			local shouldShow = visualsEnabled and isEnemy(candidate)
+			if shouldShow and character then
+				local humanoid = character:FindFirstChildOfClass("Humanoid")
+				shouldShow = humanoid ~= nil and humanoid.Health > 0
+			end
+
+			if shouldShow and character then
+				if not highlight then
+					highlight = Instance.new("Highlight")
+					highlight.Name = HIGHLIGHT_NAME
+					highlight.Parent = character
+				end
+				highlight.Enabled = true
+				highlight.Adornee = character
+				highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				highlight.FillTransparency = 1
+				highlight.OutlineTransparency = 0
+				highlight.OutlineColor = candidate.TeamColor.Color
+			elseif highlight then
+				highlight:Destroy()
+			end
+		end
+	end
+end
+
+local function getInventory()
+	return inventories:FindFirstChild(player.Name)
+end
+
+local function getInventoryState()
+	if not inventoryUtil then
+		return nil
+	end
+	local ok, state = pcall(function()
+		return inventoryUtil.getInventory(player)
+	end)
+	if ok then
+		return state
+	end
+	return nil
+end
+
+local function getCurrentHandTool()
+	local state = getInventoryState()
+	if not state then
+		return false, nil
+	end
+	return true, state.hand and state.hand.tool or nil
+end
+
+local function getUsableInventoryTool(itemType)
+	local state = getInventoryState()
+	if state and state.items then
+		for _, itemInfo in ipairs(state.items) do
+			local amount = itemInfo.amount
+			if itemInfo.itemType == itemType
+				and itemInfo.tool
+				and (type(amount) ~= "number" or amount > 0) then
+				return itemInfo.tool
+			end
+		end
+	end
+	local inventory = getInventory()
+	local tool = inventory and inventory:FindFirstChild(itemType)
+	if tool then
+		local amount = tool:GetAttribute("Amount")
+		if type(amount) ~= "number" or amount > 0 then
+			return tool
+		end
+	end
+	return nil
+end
+
+local function getSword()
+	local priority = { "emerald_sword", "diamond_sword", "iron_sword", "stone_sword", "wood_sword" }
+	for _, name in priority do
+		local sword = getUsableInventoryTool(name)
+		if sword then
+			return sword
+		end
+	end
+	return nil
+end
+
+local lastEquippedItem
+local lastEquipRequestTime = -math.huge
+
+local function equipInventoryItem(item)
+	if not item then
+		return false
+	end
+	local now = workspace:GetServerTimeNow()
+	local handKnown, currentHandTool = getCurrentHandTool()
+	if handKnown and currentHandTool == item then
+		lastEquippedItem = item
+		lastEquipRequestTime = now
+		return true
+	end
+	if lastEquippedItem == item and now - lastEquipRequestTime < EQUIP_REFRESH_INTERVAL then
+		return true
+	end
+	lastEquippedItem = item
+	lastEquipRequestTime = now
+	local ok, result = pcall(function()
+		local payload = { hand = item }
+		if setInvItem:IsA("RemoteFunction") then
+			return setInvItem:InvokeServer(payload)
+		end
+		setInvItem:FireServer(payload)
+		return true
+	end)
+	if not ok then
+		warn("SetInvItem failed:", result)
+		if lastEquippedItem == item then
+			lastEquippedItem = nil
+			lastEquipRequestTime = -math.huge
+		end
+		return false
+	end
+	return true
+end
+
+local function invalidateEquipCache()
+	lastEquippedItem = nil
+	lastEquipRequestTime = -math.huge
+end
+
+local characterAddedConnection = player.CharacterAdded:Connect(function()
+	invalidateEquipCache()
+end)
+
+-- A hotbar click, number-key selection, or scroll may replace the held item.
+-- Invalidate immediately so the next nearby-target update equips again.
+local inputBeganConnection = UserInputService.InputBegan:Connect(function()
+	invalidateEquipCache()
+end)
+
+local inputChangedConnection = UserInputService.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseWheel then
+		invalidateEquipCache()
+	end
+end)
+
+local lastSwordAnimation = -math.huge
+local swordAnimationTrack
+
+local function playSwordSwingAnimation()
+	if not gameAnimationUtil or not animationType then
+		return
+	end
+	local now = workspace:GetServerTimeNow()
+	if now - lastSwordAnimation < SWORD_ANIMATION_INTERVAL then
+		return
+	end
+	lastSwordAnimation = now
+	local ok, result = pcall(function()
+		if swordAnimationTrack then
+			swordAnimationTrack:Stop(0)
+		end
+		return gameAnimationUtil:playAnimation(player, animationType.SWORD_SWING, {
+			fadeSamePriorityTracks = false,
+		})
+	end)
+	if ok then
+		swordAnimationTrack = result
+	else
+		warn("Sword swing animation failed:", result)
+	end
+end
+
+local bridgeBlockWarningShown = false
+
+local function getBlockPlacementController()
+	local controllers = knitClient and knitClient.Controllers
+	return controllers and controllers.BlockPlacementController
+end
+
+local function getBridgeBlock(blockPlacementController)
+	local state = getInventoryState()
+	if state and state.items then
+		-- InventoryUtil supplies the authoritative tool and amount. Prefer any
+		-- nonempty team-colored wool stack.
+		for _, itemInfo in ipairs(state.items) do
+			local amount = itemInfo.amount
+			if itemInfo.tool
+				and (type(amount) ~= "number" or amount > 0)
+				and string.find(string.lower(itemInfo.itemType), "wool", 1, true) then
+				return itemInfo.tool
+			end
+		end
+
+		if blockPlacementController then
+			for _, itemInfo in ipairs(state.items) do
+				local amount = itemInfo.amount
+				if itemInfo.tool and (type(amount) ~= "number" or amount > 0) then
+					local ok, placedBlockType = pcall(function()
+						return blockPlacementController:getPlacedItemType(itemInfo.itemType)
+					end)
+					if ok and placedBlockType then
+						return itemInfo.tool
+					end
+				end
+			end
+		end
+	end
+
+	-- Fallback for the short period before InventoryUtil has an entity state.
+	local inventory = getInventory()
+	if not inventory then
+		return nil
+	end
+	local fallback
+	for _, item in inventory:GetChildren() do
+		local amount = item:GetAttribute("Amount")
+		if type(amount) ~= "number" or amount > 0 then
+			if string.find(string.lower(item.Name), "wool", 1, true) then
+				return item
+			end
+			if blockPlacementController then
+				local ok, placedBlockType = pcall(function()
+					return blockPlacementController:getPlacedItemType(item.Name)
+				end)
+				if ok and placedBlockType then
+					fallback = fallback or item
+				end
+			end
+		end
+	end
+	return fallback
+end
+
+local function needsBridgePlacement()
+	local character, root = getLivingCharacter(player)
+	if not character or not root then
+		return false
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return false
+	end
+	local direction = humanoid.MoveDirection * Vector3.new(1, 0, 1)
+	if direction.Magnitude < 0.05 then
+		return false
+	end
+	direction = direction.Unit
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character }
+	params.IgnoreWater = true
+	params.RespectCanCollide = true
+	local probeOrigin = root.Position + direction * BRIDGE_PROBE_DISTANCE
+	local support = workspace:Raycast(probeOrigin, Vector3.new(0, -BRIDGE_PROBE_DEPTH, 0), params)
+	return support == nil
+end
+
+local function runAutoBridge()
+	local blockPlacementController = getBlockPlacementController()
+	local blockItem = getBridgeBlock(blockPlacementController)
+	if not blockItem then
+		if not bridgeBlockWarningShown then
+			bridgeBlockWarningShown = true
+			warn("Auto Bridge could not find a placeable block in the inventory")
+		end
+		return false
+	end
+	bridgeBlockWarningShown = false
+	if not equipInventoryItem(blockItem) then
+		return false
+	end
+	if not blockPlacementController then
+		return false
+	end
+
+	local ok, result = pcall(function()
+		local blockPlacer = blockPlacementController:getBlockPlacer()
+		local placedBlockType = blockPlacementController:getPlacedItemType(blockItem.Name)
+		if not placedBlockType then
+			return false
+		end
+
+		-- SetInvItem updates the replicated hand, but command-bar equip requests
+		-- do not always run HandKnitController's local onEnable callback. Create
+		-- the same placer state that a manual hotbar equip would create.
+		if not blockPlacer or blockPlacer:getBlockType() ~= placedBlockType then
+			blockPlacementController:onEnable({
+				itemType = blockItem.Name,
+			})
+			blockPlacer = blockPlacementController:getBlockPlacer()
+		end
+		if not blockPlacer then
+			return false
+		end
+		blockPlacer:autoBridge(true)
+		return true
+	end)
+	if not ok then
+		warn("Auto Bridge placement failed:", result)
+		return false
+	end
+	return result
+end
+
+local trackedBeds = {}
+
+local function trackBed(instance)
+	if instance:IsA("MeshPart") and string.lower(instance.Name) == "bed" then
+		trackedBeds[instance] = true
+	end
+end
+
+for _, descendant in workspace:GetDescendants() do
+	trackBed(descendant)
+end
+
+local descendantAddedConnection = workspace.DescendantAdded:Connect(trackBed)
+local descendantRemovingConnection = workspace.DescendantRemoving:Connect(function(instance)
+	trackedBeds[instance] = nil
+end)
+
+local function normalizeTeamId(value)
+	if value == nil then
+		return nil
+	end
+	return string.lower(tostring(value))
+end
+
+local function getLocalTeamIds()
+	local ids = {}
+	local function add(value)
+		local normalized = normalizeTeamId(value)
+		if normalized then
+			ids[normalized] = true
+		end
+	end
+
+	add(player:GetAttribute("TeamId"))
+	add(player:GetAttribute("Team"))
+	add(player.TeamColor.Name)
+	add(player.TeamColor.Number)
+	local team = player.Team
+	if team then
+		add(team.Name)
+		add(team:GetAttribute("TeamId"))
+		add(team:GetAttribute("Id"))
+		add(team:GetAttribute("id"))
+		add(team.TeamColor.Name)
+		add(team.TeamColor.Number)
+	end
+	return ids
+end
+
+local function findNearestEnemyBed()
+	local character, root = getLivingCharacter(player)
+	if not character or not root then
+		return nil
+	end
+	local ownTeamIds = getLocalTeamIds()
+	local nearest
+	local nearestDistance = math.huge
+	for bed in trackedBeds do
+		if bed.Parent then
+			local bedTeamId = normalizeTeamId(bed:GetAttribute("TeamId"))
+			if bedTeamId and not ownTeamIds[bedTeamId] then
+				local distance = (bed.Position - root.Position).Magnitude
+				if distance < nearestDistance then
+					nearest = bed
+					nearestDistance = distance
+				end
+			end
+		end
+	end
+	return nearest
+end
+
+local function getBlockGridPosition(part)
+	if blockEngine then
+		local ok, position = pcall(function()
+			return blockEngine:getBlockPosition(part.Position)
+		end)
+		if ok and position then
+			return position
+		end
+	end
+	local position = part.Position
+	return Vector3.new(
+		math.round(position.X / 3),
+		math.floor(position.Y / 3),
+		math.round(position.Z / 3)
+	)
+end
+
+local activeTunnelBed
+local activeTunnelDirection
+
+local function getBedDamageTarget(bed)
+	local character, root = getLivingCharacter(player)
+	if not character or not root then
+		return bed, bed.Position, Vector3.new(0, 1, 0)
+	end
+	if activeTunnelBed ~= bed or not activeTunnelDirection then
+		activeTunnelBed = bed
+		local offset = root.Position - bed.Position
+		if math.abs(offset.X) >= math.abs(offset.Z) then
+			activeTunnelDirection = Vector3.new(offset.X >= 0 and 1 or -1, 0, 0)
+		else
+			activeTunnelDirection = Vector3.new(0, 0, offset.Z >= 0 and 1 or -1)
+		end
+	end
+
+	-- Ignore characters and harmless geometry while tracing toward the bed.
+	-- The first nearby part carrying the Block attribute becomes the tunnel
+	-- target. After it disappears, the next trace advances through the hole.
+	local ignored = {}
+	for _, candidate in Players:GetPlayers() do
+		if candidate.Character then
+			table.insert(ignored, candidate.Character)
+		end
+	end
+	local origin = bed.Position + activeTunnelDirection * (BED_DEFENSE_RADIUS + 3)
+	for _ = 1, 12 do
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = ignored
+		params.IgnoreWater = true
+		params.RespectCanCollide = true
+		local result = workspace:Raycast(origin, bed.Position - origin, params)
+		if not result then
+			break
+		end
+		local hitPart = result.Instance
+		if hitPart == bed or hitPart:IsDescendantOf(bed) then
+			return bed, result.Position, result.Normal
+		end
+		if hitPart:IsA("BasePart")
+			and hitPart:GetAttribute("Block") ~= nil
+			and (hitPart.Position - bed.Position).Magnitude <= BED_DEFENSE_RADIUS then
+			return hitPart, result.Position, result.Normal
+		end
+		table.insert(ignored, hitPart)
+	end
+
+	return bed, bed.Position + Vector3.new(0, bed.Size.Y / 2, 0), Vector3.new(0, 1, 0)
+end
+
+local bedDamageInFlight = false
+
+local function damageNearestBed()
+	if bedDamageInFlight then
+		return
+	end
+	local bed = findNearestEnemyBed()
+	if not bed then
+		activeTunnelBed = nil
+		activeTunnelDirection = nil
+		return
+	end
+	local damageTarget, hitPosition, hitNormal = getBedDamageTarget(bed)
+	local blockPosition = getBlockGridPosition(damageTarget)
+	bedDamageInFlight = true
+	task.spawn(function()
+		local ok, err = pcall(function()
+			local payload = {
+				blockRef = { blockPosition = blockPosition },
+				hitPosition = hitPosition,
+				hitNormal = hitNormal,
+			}
+			if damageBlock:IsA("RemoteFunction") then
+				damageBlock:InvokeServer(payload)
+			else
+				damageBlock:FireServer(payload)
+			end
+		end)
+		bedDamageInFlight = false
+		if not ok then
+			warn("DamageBlock failed:", err)
+		end
+	end)
+end
+
+local function sendSwordHit(targetCharacter, sword)
+	sword = sword or getSword()
+	local ownCharacter = player.Character
+	if not sword or not ownCharacter then
+		return
+	end
+	if not equipInventoryItem(sword) then
+		return
+	end
+	playSwordSwingAnimation()
+	swordHitEvent:FireServer({
+		weapon = sword,
+		entityInstance = targetCharacter,
+		validate = {
+			targetPosition = { value = targetCharacter:GetPivot().Position },
+			selfPosition = { value = ownCharacter:GetPivot().Position },
+		},
+		chargedAttack = { chargeRatio = 0 },
+	})
+end
+
+local bowConfigs = {
+	{ names = { "tactical_headhunter", "headhunter" }, projectile = "tactical_headhunter_arrow", speed = 500, lifetime = 2, drawDurationSec = 0 },
+	{ names = { "tactical_crossbow" }, projectile = "tactical_crossbow_arrow", speed = 500, lifetime = 2, drawDurationSec = 0 },
+	{ names = { "wood_crossbow", "crossbow" }, projectile = "crossbow_arrow", speed = 400, lifetime = 2, drawDurationSec = 0 },
+	{ names = { "wood_bow", "bow" }, projectile = "arrow", speed = 240, lifetime = 2.8, drawDurationSec = 2.75 },
+}
+
+local function getBow()
+	for _, config in bowConfigs do
+		for _, name in config.names do
+			local bow = getUsableInventoryTool(name)
+			if bow then
+				return bow, config
+			end
+		end
+	end
+	return nil
+end
+
+local idCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+local function generateId(length)
+	local result = table.create(length)
+	for index = 1, length do
+		local i = math.random(1, #idCharacters)
+		result[index] = string.sub(idCharacters, i, i)
+	end
+	return table.concat(result)
+end
+
+local function solveBallisticVelocity(origin, targetPosition, speed)
+	local displacement = targetPosition - origin
+	local horizontal = Vector3.new(displacement.X, 0, displacement.Z)
+	local distance = horizontal.Magnitude
+	if distance < 0.001 then
+		return displacement.Unit * speed, displacement.Magnitude / speed
+	end
+	local speedSquared = speed * speed
+	local discriminant = speedSquared * speedSquared
+		- PROJECTILE_GRAVITY * (
+			PROJECTILE_GRAVITY * distance * distance + 2 * displacement.Y * speedSquared
+		)
+	if discriminant < 0 then
+		return displacement.Unit * speed, displacement.Magnitude / speed
+	end
+	local tangent = (speedSquared - math.sqrt(discriminant)) / (PROJECTILE_GRAVITY * distance)
+	local cosine = 1 / math.sqrt(1 + tangent * tangent)
+	local sine = tangent * cosine
+	local velocity = horizontal.Unit * (speed * cosine) + Vector3.new(0, speed * sine, 0)
+	return velocity, distance / math.max(speed * cosine, 0.001)
+end
+
+local function calculatePredictedVelocity(origin, targetCharacter, targetRoot, speed)
+	local basePosition = targetRoot.Position + Vector3.new(0, 0.5, 0)
+	local targetVelocity = targetRoot.AssemblyLinearVelocity
+	local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+	local state = humanoid and humanoid:GetState()
+	local airborne = state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.Freefall
+	local time = (basePosition - origin).Magnitude / speed
+	local launchVelocity
+	for _ = 1, 4 do
+		local velocity = Vector3.new(targetVelocity.X, airborne and targetVelocity.Y or 0, targetVelocity.Z)
+		local predictedPosition = basePosition + velocity * time
+		if airborne then
+			predictedPosition += Vector3.new(0, -0.5 * workspace.Gravity * time * time, 0)
+		end
+		launchVelocity, time = solveBallisticVelocity(origin, predictedPosition, speed)
+	end
+	return launchVelocity
+end
+
+local activeProjectileConnections = {}
+
+local function disconnectProjectileConnection(connection)
+	if connection then
+		activeProjectileConnections[connection] = nil
+		connection:Disconnect()
+	end
+end
+
+local function simulateProjectile(projectileId, origin, velocity, targetCharacter, lifetime)
+	local ownCharacter = player.Character
+	if not ownCharacter then
+		return
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { ownCharacter }
+	params.IgnoreWater = true
+	local position = origin
+	local age = 0
+	local connection
+	connection = RunService.Heartbeat:Connect(function(deltaTime)
+		age += deltaTime
+		if age >= lifetime then
+			disconnectProjectileConnection(connection)
+			return
+		end
+		local nextVelocity = velocity + Vector3.new(0, -PROJECTILE_GRAVITY, 0) * deltaTime
+		local nextPosition = position + (velocity + nextVelocity) * 0.5 * deltaTime
+		local hit = workspace:Raycast(position, nextPosition - position, params)
+		if hit then
+			if hit.Instance:IsDescendantOf(targetCharacter) then
+				projectileHit:FireServer(projectileId, targetCharacter)
+			end
+			disconnectProjectileConnection(connection)
+			return
+		end
+		position = nextPosition
+		velocity = nextVelocity
+	end)
+	activeProjectileConnections[connection] = true
+end
+
+local function fireBow(targetCharacter, targetRoot, bow, config)
+	if not bow or not config then
+		bow, config = getBow()
+	end
+	local ownCharacter = player.Character
+	if not bow or not config or not ownCharacter then
+		return
+	end
+	if not equipInventoryItem(bow) then
+		return
+	end
+	local selfPosition = ownCharacter:GetPivot().Position
+	local origin = selfPosition + Vector3.new(0, 2, 0)
+	local velocity = calculatePredictedVelocity(origin, targetCharacter, targetRoot, config.speed)
+	local projectileId = generateId(8)
+	local launchData = {
+		shotId = generateId(8),
+		drawDurationSec = config.drawDurationSec,
+	}
+	task.spawn(function()
+		local ok, err = pcall(function()
+			local arguments = {
+				bow,
+				"arrow",
+				config.projectile,
+				origin,
+				selfPosition,
+				velocity,
+				projectileId,
+				launchData,
+				workspace:GetServerTimeNow() - 0.045,
+			}
+			if projectileFire:IsA("RemoteFunction") then
+				projectileFire:InvokeServer(unpack(arguments))
+			else
+				projectileFire:FireServer(unpack(arguments))
+			end
+		end)
+		if not ok then
+			warn("ProjectileFire failed:", err)
+		end
+	end)
+	simulateProjectile(projectileId, origin, velocity, targetCharacter, config.lifetime)
+end
+
+local lastSwordAttack = 0
+local lastBowShot = 0
+local lastHighlightRefresh = -math.huge
+local lastSprintRefresh = -math.huge
+local lastAutoBridge = -math.huge
+local lastBedDamage = -math.huge
+
+local mainHeartbeatConnection = RunService.Heartbeat:Connect(function()
+	local now = workspace:GetServerTimeNow()
+	if sprintEnabled and now - lastSprintRefresh >= SPRINT_REFRESH_INTERVAL then
+		lastSprintRefresh = now
+		startAutoSprint()
+	end
+	if now - lastHighlightRefresh >= HIGHLIGHT_REFRESH_INTERVAL then
+		lastHighlightRefresh = now
+		updatePlayerHighlights()
+	end
+	if bedBreakEnabled and now - lastBedDamage >= BED_BREAK_INTERVAL then
+		lastBedDamage = now
+		damageNearestBed()
+	end
+
+	-- Each enabled feature runs independently. Required items are equipped
+	-- immediately before the corresponding action request.
+	local swordTarget
+	local sword
+	if swordEnabled then
+		swordTarget = findNearestTarget(SWORD_RANGE)
+		if swordTarget then
+			sword = getSword()
+		end
+	end
+	if swordTarget and sword then
+		if now - lastSwordAttack >= SWORD_ATTACK_INTERVAL then
+			lastSwordAttack = now
+			sendSwordHit(swordTarget, sword)
+		end
+	end
+
+	-- Bridge placement has its own interval and does not suppress combat.
+	if bridgeEnabled and needsBridgePlacement() then
+		if now - lastAutoBridge >= AUTO_BRIDGE_INTERVAL then
+			lastAutoBridge = now
+			runAutoBridge()
+		end
+	end
+
+	if bowEnabled then
+		local target, root = findNearestTarget(bowRange)
+		if target and root then
+			local bow, config = getBow()
+			if bow and config then
+				if now - lastBowShot >= BOW_COOLDOWN then
+					lastBowShot = now
+					fireBow(target, root, bow, config)
+				end
+			end
+		end
+	end
+end)
+
+local Controller = {
+	Id = "bedwars-combat",
+	Name = "BedWars Combat",
+	Version = SCRIPT_VERSION,
+	Changed = ChangedBindable.Event,
+	MinBowRange = MIN_BOW_RANGE,
+	MaxBowRange = MAX_BOW_RANGE
+}
+
+local function queueChanged()
+	if Destroyed then
+		return
+	end
+
+	task.defer(function()
+		if not Destroyed then
+			ChangedBindable:Fire(Controller:GetState())
+		end
+	end)
+end
+
+function Controller:GetState()
+	return {
+		SwordEnabled = swordEnabled,
+		BowEnabled = bowEnabled,
+		SprintEnabled = sprintEnabled,
+		BridgeEnabled = bridgeEnabled,
+		BedBreakEnabled = bedBreakEnabled,
+		VisualsEnabled = visualsEnabled,
+		BowRange = bowRange,
+		Destroyed = Destroyed,
+		Version = SCRIPT_VERSION
+	}
+end
+
+local function setBoolean(currentValue, newValue, assign)
+	if Destroyed then
+		return false, "Controller has been destroyed."
+	end
+
+	newValue = newValue == true
+
+	if currentValue ~= newValue then
+		assign(newValue)
+		queueChanged()
+	end
+
+	return true, Controller:GetState()
+end
+
+function Controller:SetSwordEnabled(enabled)
+	return setBoolean(swordEnabled, enabled, function(value)
+		swordEnabled = value
+	end)
+end
+
+function Controller:SetBowEnabled(enabled)
+	return setBoolean(bowEnabled, enabled, function(value)
+		bowEnabled = value
+	end)
+end
+
+function Controller:SetSprintEnabled(enabled)
+	return setBoolean(sprintEnabled, enabled, function(value)
+		sprintEnabled = value
+
+		if value then
+			startAutoSprint()
+		else
+			stopAutoSprint()
+		end
+	end)
+end
+
+function Controller:SetBridgeEnabled(enabled)
+	return setBoolean(bridgeEnabled, enabled, function(value)
+		bridgeEnabled = value
+	end)
+end
+
+function Controller:SetBedBreakEnabled(enabled)
+	return setBoolean(bedBreakEnabled, enabled, function(value)
+		bedBreakEnabled = value
+	end)
+end
+
+function Controller:SetVisualsEnabled(enabled)
+	return setBoolean(visualsEnabled, enabled, function(value)
+		visualsEnabled = value
+		updatePlayerHighlights()
+	end)
+end
+
+function Controller:SetBowRange(value)
+	if Destroyed then
+		return false, "Controller has been destroyed."
+	end
+
+	value = tonumber(value)
+
+	if not value then
+		return false, "Bow range must be a number."
+	end
+
+	value = math.round(math.clamp(value, MIN_BOW_RANGE, MAX_BOW_RANGE))
+
+	if bowRange ~= value then
+		bowRange = value
+		queueChanged()
+	end
+
+	return true, self:GetState()
+end
+
+function Controller:SetFeature(featureName, enabled)
+	local setters = {
+		Sword = self.SetSwordEnabled,
+		Bow = self.SetBowEnabled,
+		Sprint = self.SetSprintEnabled,
+		Bridge = self.SetBridgeEnabled,
+		BedBreak = self.SetBedBreakEnabled,
+		Visuals = self.SetVisualsEnabled
+	}
+
+	local setter = setters[tostring(featureName)]
+
+	if not setter then
+		return false, "Unknown feature: " .. tostring(featureName)
+	end
+
+	return setter(self, enabled)
+end
+
+function Controller:Destroy()
+	if Destroyed then
+		return
+	end
+
+	swordEnabled = false
+	bowEnabled = false
+	sprintEnabled = false
+	bridgeEnabled = false
+	bedBreakEnabled = false
+	visualsEnabled = false
+
+	stopAutoSprint()
+	updatePlayerHighlights()
+
+	for _, connection in ipairs({
+		characterAddedConnection,
+		inputBeganConnection,
+		inputChangedConnection,
+		descendantAddedConnection,
+		descendantRemovingConnection,
+		mainHeartbeatConnection
+	}) do
+		if connection then
+			connection:Disconnect()
+		end
+	end
+
+	for connection in pairs(activeProjectileConnections) do
+		disconnectProjectileConnection(connection)
+	end
+
+	if swordAnimationTrack then
+		pcall(function()
+			swordAnimationTrack:Stop()
+		end)
+		swordAnimationTrack = nil
+	end
+
+	Destroyed = true
+	ChangedBindable:Destroy()
+end
+
+queueChanged()
+
+return Controller
