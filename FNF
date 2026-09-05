@@ -14,7 +14,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- CONFIG
 --==================================================
 
-local ScriptVersion = "0.1.1"
+local ScriptVersion = "0.1.3"
 local Enabled = false
 
 -- How far ahead we begin predicting.
@@ -26,6 +26,8 @@ local ValidHitWindow = 0.1305
 
 local TapHoldSeconds = 0.012
 local HitVerifySeconds = 0.040
+local FailedHitsBeforeRefresh = 2
+local InputRefreshCooldown = 0.20
 
 local DetectedSide = nil
 local LastDetectedSide = nil
@@ -36,6 +38,9 @@ local ActiveKeySync2 = nil
 local InternalKeyPress = nil
 local InternalKeyLift = nil
 local InternalInputOwner = nil
+local InternalInputEnvironment = nil
+local ConsecutiveInputFailures = 0
+local LastInputRefreshAt = -math.huge
 
 local HitCount = 0
 local SavedCount = 0
@@ -106,14 +111,45 @@ local function ClearInternalInput()
 	InternalKeyPress = nil
 	InternalKeyLift = nil
 	InternalInputOwner = nil
+	InternalInputEnvironment = nil
 end
 
-local function TryInputEnvironment(
-	Environment,
-	Owner,
-	RejectedKeyPress,
-	RejectedKeyLift
-)
+local function CachedInternalInputIsCurrent()
+
+	if type(InternalKeyPress) ~= "function"
+		or type(InternalKeyLift) ~= "function" then
+
+		return false
+	end
+
+	local Environment = InternalInputEnvironment
+
+	-- getsenv owners can receive a replacement environment while their
+	-- LocalScript instance stays alive, so read that owner again before use.
+	if typeof(InternalInputOwner) == "Instance"
+		and type(getsenv) == "function" then
+
+		local Success, CurrentEnvironment =
+			pcall(getsenv, InternalInputOwner)
+
+		if Success
+			and type(CurrentEnvironment) == "table" then
+
+			Environment = CurrentEnvironment
+		end
+	end
+
+	if type(Environment) ~= "table" then
+		-- The named-function fallback has no authoritative environment to
+		-- compare. Its health is handled by the failed-hit watchdog below.
+		return true
+	end
+
+	return rawget(Environment, "KeyPress") == InternalKeyPress
+		and rawget(Environment, "KeyLift") == InternalKeyLift
+end
+
+local function TryInputEnvironment(Environment, Owner)
 
 	if type(Environment) ~= "table" then
 		return false
@@ -130,15 +166,12 @@ local function TryInputEnvironment(
 
 	if type(KeyPressFunction) == "function"
 		and type(KeyLiftFunction) == "function"
-		and type(NoteInputFunction) == "function"
-		and not (
-			KeyPressFunction == RejectedKeyPress
-			and KeyLiftFunction == RejectedKeyLift
-		) then
+		and type(NoteInputFunction) == "function" then
 
 		InternalKeyPress = KeyPressFunction
 		InternalKeyLift = KeyLiftFunction
 		InternalInputOwner = Owner
+		InternalInputEnvironment = Environment
 		return true
 	end
 
@@ -147,29 +180,41 @@ end
 
 local function ResolveInternalInput(ForceRefresh)
 
-	local PreviousKeyPress = InternalKeyPress
-	local PreviousKeyLift = InternalKeyLift
-	local PreviousInputOwner = InternalInputOwner
-
 	if not ForceRefresh
 		and type(InternalKeyPress) == "function"
-		and type(InternalKeyLift) == "function" then
+		and type(InternalKeyLift) == "function"
+		and CachedInternalInputIsCurrent() then
 
 		return true
 	end
 
-	ClearInternalInput()
+	-- A watchdog refresh should first re-read the environment that produced the
+	-- last working pair. This avoids jumping to an unrelated older KeyPress pair
+	-- that may still exist in getgc during a long match.
+	if ForceRefresh then
 
-	local RejectedKeyPress = nil
-	local RejectedKeyLift = nil
+		local PreviousOwner = InternalInputOwner
+		local CurrentEnvironment = InternalInputEnvironment
 
-	if ForceRefresh
-		and type(PreviousKeyPress) == "function"
-		and type(PreviousKeyLift) == "function" then
+		if typeof(PreviousOwner) == "Instance"
+			and type(getsenv) == "function" then
 
-		RejectedKeyPress = PreviousKeyPress
-		RejectedKeyLift = PreviousKeyLift
+			local Success, Environment =
+				pcall(getsenv, PreviousOwner)
+
+			if Success
+				and type(Environment) == "table" then
+
+				CurrentEnvironment = Environment
+			end
+		end
+
+		if TryInputEnvironment(CurrentEnvironment, PreviousOwner) then
+			return true
+		end
 	end
+
+	ClearInternalInput()
 
 	-- Some executors expose the environment of the LocalScript that required
 	-- the gameplay module.
@@ -183,12 +228,7 @@ local function ResolveInternalInput(ForceRefresh)
 					pcall(getsenv, Object)
 
 				if Success
-					and TryInputEnvironment(
-						Environment,
-						Object,
-						RejectedKeyPress,
-						RejectedKeyLift
-					) then
+					and TryInputEnvironment(Environment, Object) then
 
 					return true
 				end
@@ -218,12 +258,7 @@ local function ResolveInternalInput(ForceRefresh)
 
 					SeenEnvironments[Object] = true
 
-					if TryInputEnvironment(
-						Object,
-						Object,
-						RejectedKeyPress,
-						RejectedKeyLift
-					) then
+					if TryInputEnvironment(Object, Object) then
 						return true
 					end
 
@@ -257,12 +292,7 @@ local function ResolveInternalInput(ForceRefresh)
 
 						SeenEnvironments[Environment] = true
 
-						if TryInputEnvironment(
-							Environment,
-							Object,
-							RejectedKeyPress,
-							RejectedKeyLift
-						) then
+						if TryInputEnvironment(Environment, Object) then
 							return true
 						end
 					end
@@ -279,33 +309,44 @@ local function ResolveInternalInput(ForceRefresh)
 			if type(NamedFunctions.KeyPress) == "function"
 				and type(NamedFunctions.KeyLift) == "function"
 				and type(NamedFunctions.NoteInput) == "function"
-				and SameSource
-				and not (
-					NamedFunctions.KeyPress == RejectedKeyPress
-					and NamedFunctions.KeyLift == RejectedKeyLift
-				) then
+				and SameSource then
 
 				InternalKeyPress = NamedFunctions.KeyPress
 				InternalKeyLift = NamedFunctions.KeyLift
 				InternalInputOwner = NamedFunctions.NoteInput
+				InternalInputEnvironment = nil
 				return true
 			end
 		end
 	end
 
-	-- If the game has not published a replacement yet, keep the old pair as a
-	-- fallback. The next failed verification will force another refresh.
-	if ForceRefresh
-		and type(PreviousKeyPress) == "function"
-		and type(PreviousKeyLift) == "function" then
+	return false
+end
 
-		InternalKeyPress = PreviousKeyPress
-		InternalKeyLift = PreviousKeyLift
-		InternalInputOwner = PreviousInputOwner
-		return true
+local function RecordInputSuccess()
+
+	ConsecutiveInputFailures = 0
+end
+
+local function RecordInputFailure(RefreshImmediately)
+
+	ConsecutiveInputFailures += 1
+
+	if not RefreshImmediately
+		and ConsecutiveInputFailures < FailedHitsBeforeRefresh then
+
+		return false
 	end
 
-	return false
+	local Now = os.clock()
+
+	if Now - LastInputRefreshAt < InputRefreshCooldown then
+		return false
+	end
+
+	LastInputRefreshAt = Now
+	ConsecutiveInputFailures = 0
+	return ResolveInternalInput(true)
 end
 
 --==================================================
@@ -460,20 +501,34 @@ local function PressLane(Lane)
 	LanePressToken[Lane] += 1
 	local Token = LanePressToken[Lane]
 
-	-- Retrigger immediately. Yielding here moves the hit a full frame late.
-	if LaneHeld[Lane] then
+	-- songPlay separately remembers held KeyCodes and silently ignores a press
+	-- while its entry is still true. Always synchronize a lift before pressing,
+	-- even if our local lane state already says released. This prevents lanes
+	-- from becoming permanently blocked after a missed/dropped release.
+	local OldInput =
+		LaneInputObject[Lane] or InputObject
 
-		local OldInput =
-			LaneInputObject[Lane] or InputObject
-
+	local LiftSuccess =
 		pcall(
 			InternalKeyLift,
 			OldInput,
 			false
 		)
 
-		LaneHeld[Lane] = false
+	if not LiftSuccess then
+		RecordInputFailure(true)
+
+		if type(InternalKeyLift) == "function" then
+			pcall(
+				InternalKeyLift,
+				OldInput,
+				false
+			)
+		end
 	end
+
+	LaneHeld[Lane] = false
+	LaneInputObject[Lane] = nil
 
 	local Success =
 		pcall(
@@ -484,8 +539,8 @@ local function PressLane(Lane)
 
 	if not Success then
 		-- A replaced controller can leave the old closure callable but invalid.
-		-- Drop it now so the next frame searches for the live handler pair.
-		ResolveInternalInput(true)
+		-- Refresh immediately when the function itself throws.
+		RecordInputFailure(true)
 	end
 
 	if Success then
@@ -504,26 +559,49 @@ local function ReleaseLane(Lane, ExpectedToken)
 		return false
 	end
 
-	local InputObject =
-		LaneInputObject[Lane]
-
-	if not InputObject
-		or type(InternalKeyLift) ~= "function" then
+	if type(InternalKeyLift) ~= "function"
+		and not ResolveInternalInput() then
 
 		LaneHeld[Lane] = false
 		LaneInputObject[Lane] = nil
 		return false
 	end
 
-	pcall(
-		InternalKeyLift,
-		InputObject,
-		false
-	)
+	local InputObject =
+		LaneInputObject[Lane]
+
+	if not InputObject then
+
+		local KeyCode = GetLaneKeyCode(Lane)
+
+		if KeyCode then
+			InputObject = {
+				UserInputType = Enum.UserInputType.Keyboard,
+				KeyCode = KeyCode
+			}
+		end
+	end
+
+	if not InputObject then
+		LaneHeld[Lane] = false
+		LaneInputObject[Lane] = nil
+		return false
+	end
+
+	local Success =
+		pcall(
+			InternalKeyLift,
+			InputObject,
+			false
+		)
+
+	if not Success then
+		RecordInputFailure(true)
+	end
 
 	LaneHeld[Lane] = false
 	LaneInputObject[Lane] = nil
-	return true
+	return Success
 end
 
 local function ReleaseAll()
@@ -688,6 +766,29 @@ local function CountPlayerNotes(
 end
 
 local function DetectSide(MatchFrame)
+
+	-- Battle() in the original client makes only the local player's underlay
+	-- visible. This is a direct side marker and is safer than guessing from the
+	-- currently spawned notes during dense charts or chart gaps.
+	local KeySync1 = MatchFrame:FindFirstChild("KeySync1")
+	local KeySync2 = MatchFrame:FindFirstChild("KeySync2")
+	local Underlay1 = KeySync1 and KeySync1:FindFirstChild("Underlay")
+	local Underlay2 = KeySync2 and KeySync2:FindFirstChild("Underlay")
+
+	if Underlay1
+		and Underlay2
+		and Underlay1.Visible ~= Underlay2.Visible then
+
+		local MarkedSide = Underlay1.Visible and 1 or 2
+
+		if LastDetectedSide ~= MarkedSide then
+			ConsecutiveInputFailures = 0
+			ClearInternalInput()
+		end
+
+		LastDetectedSide = MarkedSide
+		return LastDetectedSide
+	end
 
 	local Side1 =
 		CountPlayerNotes(
@@ -1371,6 +1472,8 @@ Toggle.MouseButton1Click:Connect(function()
 
 	CancelScheduledNotes()
 	ResetPendingLanes()
+	ConsecutiveInputFailures = 0
+	LastInputRefreshAt = -math.huge
 
 	for Note in pairs(PreviousSamples) do
 		PreviousSamples[Note] = nil
@@ -1483,6 +1586,7 @@ RenderConnection =
 							end
 							LanePendingNote[Lane] = nil
 							HitCount += 1
+							RecordInputSuccess()
 
 							if Pending.WasEmergency then
 								SavedCount += 1
@@ -1495,17 +1599,19 @@ RenderConnection =
 							NoteStates[Head] = "hit"
 							LanePendingNote[Lane] = nil
 							ReleaseLane(Lane, Pending.PressToken)
+							RecordInputFailure(false)
 
 						elseif Now - Pending.AttemptAt
 							>= HitVerifySeconds then
 
 							-- The internal handler did not consume it. Release and let
-							-- the lane retry while it is still inside 130.5 ms. Refresh the
-							-- cached closures so the retry can use a rebuilt controller.
+							-- the lane retry while it is still inside 130.5 ms. Repeated
+							-- failures trigger the input watchdog without abandoning a good
+							-- handler after one mistimed attempt.
 							NoteStates[Head] = nil
 							LanePendingNote[Lane] = nil
 							ReleaseLane(Lane, Pending.PressToken)
-							ResolveInternalInput(true)
+							RecordInputFailure(false)
 						end
 					end
 
