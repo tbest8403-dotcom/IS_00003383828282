@@ -9,13 +9,18 @@ local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
 
 --==================================================
 -- CONFIG
 --==================================================
 
-local ScriptVersion = "0.1.3"
+local ScriptVersion = "0.1.4"
 local Enabled = false
+local AntiAfkEnabled = false
+local AfkOriginalEnabled = setmetatable({}, {
+	__mode = "k"
+})
 
 -- How far ahead we begin predicting.
 local PredictionLookahead = 0.15
@@ -1254,6 +1259,57 @@ local function QueueChanged()
 	end)
 end
 
+local function IsAfkScript(Candidate)
+
+	return Candidate
+		and Candidate.Name == "AfkSys"
+		and Candidate:IsA("BaseScript")
+end
+
+local function ApplyAntiAfk()
+
+	if AntiAfkEnabled then
+
+		for _, Candidate in ipairs(PlayerScripts:GetChildren()) do
+
+			if IsAfkScript(Candidate) then
+
+				if AfkOriginalEnabled[Candidate] == nil then
+					AfkOriginalEnabled[Candidate] = Candidate.Enabled
+				end
+
+				Candidate.Enabled = false
+			end
+		end
+
+	else
+
+		for Candidate, WasEnabled in pairs(AfkOriginalEnabled) do
+
+			if Candidate.Parent then
+				pcall(function()
+					Candidate.Enabled = WasEnabled
+				end)
+			end
+
+			AfkOriginalEnabled[Candidate] = nil
+		end
+	end
+end
+
+local AfkChildAddedConnection =
+	PlayerScripts.ChildAdded:Connect(function(Child)
+
+		if AntiAfkEnabled
+			and IsAfkScript(Child) then
+
+			task.defer(function()
+				ApplyAntiAfk()
+				QueueChanged()
+			end)
+		end
+	end)
+
 local function CreateSignal()
 
 	local Callback = nil
@@ -1386,6 +1442,7 @@ function Controller:GetState()
 
 	return {
 		Enabled = Enabled,
+		AntiAfkEnabled = AntiAfkEnabled,
 		Destroyed = Destroyed,
 		Version = ScriptVersion,
 		Status = Status.Text,
@@ -1421,6 +1478,23 @@ function Controller:SetEnabled(NewEnabled)
 	end
 
 	return true, State
+end
+
+function Controller:SetAntiAfkEnabled(NewEnabled)
+
+	NewEnabled = NewEnabled == true
+
+	if Destroyed then
+		return false, "Controller has been destroyed."
+	end
+
+	if AntiAfkEnabled ~= NewEnabled then
+		AntiAfkEnabled = NewEnabled
+		ApplyAntiAfk()
+		QueueChanged()
+	end
+
+	return true, self:GetState()
 end
 
 function Controller:Toggle()
@@ -1720,6 +1794,13 @@ RenderConnection =
 Close.MouseButton1Click:Connect(function()
 
 	Enabled = false
+	AntiAfkEnabled = false
+	ApplyAntiAfk()
+
+	if AfkChildAddedConnection then
+		AfkChildAddedConnection:Disconnect()
+		AfkChildAddedConnection = nil
+	end
 
 	ReleaseAll()
 
