@@ -1,0 +1,204 @@
+-- Xen supported-script hub
+
+local XEN_URL = "https://raw.githubusercontent.com/tbest8403-dotcom/UILibrarys/refs/heads/main/Xen"
+local FNF_URL = "https://raw.githubusercontent.com/tbest8403-dotcom/IS_00003383828282/refs/heads/main/FNF"
+local BEDWARS_URL = "https://raw.githubusercontent.com/tbest8403-dotcom/IS_00003383828282/refs/heads/main/BedWars"
+
+local Xen = loadstring(game:HttpGet(XEN_URL, true))()
+
+local App = Xen:CreateWindow({
+	Title = "Xen",
+	GuiName = "XenHub"
+})
+
+App:RegisterScript({
+	Id = "fnf-owner-perfect-v4",
+	Name = "Basically FNF: remix",
+	Game = "Friday Night Funkin'",
+	Description = "Internal-input automatic player with ordered lanes.",
+	Url = FNF_URL,
+
+	OnLoaded = function(Page, Controller)
+		assert(type(Controller) == "table", "The FNF script did not return its controller.")
+		assert(type(Controller.GetState) == "function", "The FNF controller is missing GetState().")
+		assert(type(Controller.SetEnabled) == "function", "The FNF controller is missing SetEnabled().")
+		assert(type(Controller.SetAntiAfkEnabled) == "function", "The FNF controller is missing SetAntiAfkEnabled().")
+
+		Page:AddSection("Auto player")
+		Page:AddLabel({
+			Text = "Version: " .. tostring(Controller.Version or "unknown"),
+			Muted = true
+		})
+
+		local StatusLabel
+		local EnabledToggle
+		local AntiAfkToggle
+
+		local function Refresh()
+			local State = Controller:GetState()
+
+			StatusLabel:Set(
+				"AutoPlay: " .. (State.Enabled and "ON" or "OFF")
+			)
+
+			EnabledToggle:Set(State.Enabled, true)
+			AntiAfkToggle:Set(State.AntiAfkEnabled, true)
+		end
+
+		StatusLabel = Page:AddLabel({
+			Text = "Connecting…"
+		})
+
+		EnabledToggle = Page:AddToggle({
+			Name = "AutoPlay",
+			Default = false,
+			Callback = function(Enabled)
+				local Success, Result = Controller:SetEnabled(Enabled)
+
+				if not Success then
+					Page:SetMessage(tostring(Result))
+				else
+					Page:SetMessage("")
+				end
+
+				task.defer(Refresh)
+			end
+		})
+
+		Page:AddSection("Player")
+
+		AntiAfkToggle = Page:AddToggle({
+			Name = "Anti-AFK",
+			Default = false,
+			Callback = function(Enabled)
+				local Success, Result = Controller:SetAntiAfkEnabled(Enabled)
+
+				if not Success then
+					Page:SetMessage(tostring(Result))
+				else
+					Page:SetMessage("")
+				end
+
+				task.defer(Refresh)
+			end
+		})
+
+		if Controller.Changed then
+			Page:_Track(Controller.Changed:Connect(Refresh))
+		end
+
+		Refresh()
+	end
+})
+
+App:RegisterScript({
+	Id = "bedwars-combat",
+	Name = "BedWars Combat",
+	Game = "BedWars",
+	Description = "Sword, bow, sprint, bridge, bed breaking, and enemy visuals.",
+	Url = BEDWARS_URL,
+
+	OnLoaded = function(Page, Controller)
+		assert(type(Controller) == "table", "BedWars Combat did not return its controller.")
+		assert(type(Controller.GetState) == "function", "BedWars Combat is missing GetState().")
+
+		Page:AddLabel({
+			Text = "Version: " .. tostring(Controller.Version or "unknown"),
+			Muted = true
+		})
+
+		local Controls = {}
+
+		local function Set(Method, Value)
+			local Success, Result = Controller[Method](Controller, Value)
+
+			if Success then
+				Page:SetMessage("")
+			else
+				Page:SetMessage(tostring(Result))
+			end
+		end
+
+		Page:AddSection("Combat")
+
+		Controls.Sword = Page:AddToggle({
+			Name = "Auto Sword",
+			Callback = function(Value)
+				Set("SetSwordEnabled", Value)
+			end
+		})
+
+		Controls.Bow = Page:AddToggle({
+			Name = "Auto Bow",
+			Callback = function(Value)
+				Set("SetBowEnabled", Value)
+			end
+		})
+
+		Controls.BowRange = Page:AddSlider({
+			Name = "Bow range",
+			Min = Controller.MinBowRange or 10,
+			Max = Controller.MaxBowRange or 150,
+			Step = 1,
+			Default = 150,
+			Format = function(Value)
+				return tostring(Value) .. " studs"
+			end,
+			Callback = function(Value)
+				Set("SetBowRange", Value)
+			end
+		})
+
+		Page:AddSection("Movement")
+
+		Controls.Sprint = Page:AddToggle({
+			Name = "Auto Sprint",
+			Callback = function(Value)
+				Set("SetSprintEnabled", Value)
+			end
+		})
+
+		Controls.Bridge = Page:AddToggle({
+			Name = "Auto Bridge",
+			Callback = function(Value)
+				Set("SetBridgeEnabled", Value)
+			end
+		})
+
+		Page:AddSection("World")
+
+		Controls.BedBreak = Page:AddToggle({
+			Name = "Auto Break Bed",
+			Callback = function(Value)
+				Set("SetBedBreakEnabled", Value)
+			end
+		})
+
+		Controls.Visuals = Page:AddToggle({
+			Name = "Enemy Visuals",
+			Callback = function(Value)
+				Set("SetVisualsEnabled", Value)
+			end
+		})
+
+		local function Refresh()
+			local State = Controller:GetState()
+
+			Controls.Sword:Set(State.SwordEnabled, true)
+			Controls.Bow:Set(State.BowEnabled, true)
+			Controls.Sprint:Set(State.SprintEnabled, true)
+			Controls.Bridge:Set(State.BridgeEnabled, true)
+			Controls.BedBreak:Set(State.BedBreakEnabled, true)
+			Controls.Visuals:Set(State.VisualsEnabled, true)
+			Controls.BowRange:Set(State.BowRange, true)
+		end
+
+		if Controller.Changed then
+			Page:_Track(Controller.Changed:Connect(Refresh))
+		end
+
+		Refresh()
+	end
+})
+
+return App
