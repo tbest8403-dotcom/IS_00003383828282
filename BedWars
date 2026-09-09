@@ -5,7 +5,7 @@
     controls, while this module exposes state through a controller table.
 ]]
 
-local SCRIPT_VERSION = "0.1.5"
+local SCRIPT_VERSION = "0.1.2"
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -145,14 +145,10 @@ local ANTI_KNOCKBACK_REFRESH_INTERVAL = 1
 local ANTIVOID_FOOTPRINT_SIDE_OFFSET = 1.25
 local ANTIVOID_FOOTPRINT_FRONT_OFFSET = 0.8
 local ANTIVOID_MINIMUM_GROUND_NORMAL = 0.45
-local ANTIVOID_AIR_RECOVERY_DELAY = 0.015
+local ANTIVOID_AIR_RECOVERY_DELAY = 0.025
 local ANTIVOID_JUMP_GRACE_TIME = 0.9
-local ANTIVOID_LANDING_PREDICTION_TIME = 0.45
+local ANTIVOID_LANDING_PREDICTION_TIME = 0.35
 local ANTIVOID_LANDING_DEPTH = 24
-local ANTIVOID_RAYCAST_INTERVAL = 1 / 45
-local ANTIVOID_UNSUPPORTED_FALL_LIMIT = 0.1
-local ANTIVOID_SAFE_POSITION_DELAY = 0.18
-local ANTIVOID_TELEPORT_HEIGHT_OFFSET = 2
 
 local swordEnabled = false
 local bowEnabled = false
@@ -164,13 +160,9 @@ local antiKnockbackEnabled = false
 local antiVoidEnabled = false
 local antiVoidTeleportCount = 0
 local antiVoidAirborneTime = 0
-local antiVoidUnsupportedFallTime = 0
-local antiVoidRaycastAccumulator = ANTIVOID_RAYCAST_INTERVAL
 local antiVoidEdgeBlocked = false
 local antiVoidJumpGraceUntil = 0
 local antiVoidLastSafeCFrame = nil
-local antiVoidSafeCandidateCFrame = nil
-local antiVoidSafeCandidateAt = 0
 local antiVoidCharacterConnection = nil
 local antiVoidCharacterGeneration = 0
 local Destroyed = false
@@ -242,25 +234,12 @@ local function restoreAntiKnockbackHooks()
 	end
 end
 
-local function castAntiVoidGround(origin, depth, params)
-	local result = workspace:Raycast(
-		origin + Vector3.new(0, 2, 0),
-		Vector3.new(0, -depth, 0),
-		params
-	)
-
-	if result and result.Normal.Y >= ANTIVOID_MINIMUM_GROUND_NORMAL then
-		return result
-	end
-
-	return nil
-end
-
-local function findAntiVoidGround(root, targetPosition, depth, params)
-	local centerGround = castAntiVoidGround(targetPosition, depth, params)
-	if centerGround then
-		return centerGround
-	end
+local function findAntiVoidGround(character, root, targetPosition, depth)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character }
+	params.IgnoreWater = false
+	params.RespectCanCollide = true
 
 	local right = Vector3.new(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z)
 	local forward = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
@@ -268,23 +247,31 @@ local function findAntiVoidGround(root, targetPosition, depth, params)
 	right = right.Magnitude > 0.01 and right.Unit or Vector3.new(1, 0, 0)
 	forward = forward.Magnitude > 0.01 and forward.Unit or Vector3.new(0, 0, -1)
 
-	return castAntiVoidGround(
+	local origins = {
+		targetPosition,
 		targetPosition + right * ANTIVOID_FOOTPRINT_SIDE_OFFSET,
-		depth,
-		params
-	) or castAntiVoidGround(
 		targetPosition - right * ANTIVOID_FOOTPRINT_SIDE_OFFSET,
-		depth,
-		params
-	) or castAntiVoidGround(
 		targetPosition + forward * ANTIVOID_FOOTPRINT_FRONT_OFFSET,
-		depth,
-		params
-	) or castAntiVoidGround(
-		targetPosition - forward * ANTIVOID_FOOTPRINT_FRONT_OFFSET,
-		depth,
-		params
-	)
+		targetPosition - forward * ANTIVOID_FOOTPRINT_FRONT_OFFSET
+	}
+
+	local closest = nil
+
+	for _, origin in ipairs(origins) do
+		local result = workspace:Raycast(
+			origin + Vector3.new(0, 2, 0),
+			Vector3.new(0, -depth, 0),
+			params
+		)
+
+		if result and result.Normal.Y >= ANTIVOID_MINIMUM_GROUND_NORMAL then
+			if not closest or result.Distance < closest.Distance then
+				closest = result
+			end
+		end
+	end
+
+	return closest
 end
 
 local function teleportToAntiVoidSafePosition(root)
@@ -293,14 +280,11 @@ local function teleportToAntiVoidSafePosition(root)
 
 	if antiVoidLastSafeCFrame then
 		root.CFrame = antiVoidLastSafeCFrame
-			+ Vector3.new(0, ANTIVOID_TELEPORT_HEIGHT_OFFSET, 0)
 	end
 end
 
 local function resetAntiVoidState()
 	antiVoidAirborneTime = 0
-	antiVoidUnsupportedFallTime = 0
-	antiVoidRaycastAccumulator = ANTIVOID_RAYCAST_INTERVAL
 	antiVoidEdgeBlocked = false
 	antiVoidJumpGraceUntil = 0
 end
@@ -326,15 +310,7 @@ local function connectAntiVoidCharacter(character)
 	end
 
 	antiVoidLastSafeCFrame = root.CFrame
-	antiVoidSafeCandidateCFrame = root.CFrame
-	antiVoidSafeCandidateAt = os.clock()
 	resetAntiVoidState()
-
-	local antiVoidRaycastParams = RaycastParams.new()
-	antiVoidRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	antiVoidRaycastParams.FilterDescendantsInstances = { character }
-	antiVoidRaycastParams.IgnoreWater = false
-	antiVoidRaycastParams.RespectCanCollide = true
 
 	antiVoidCharacterConnection = RunService.PreSimulation:Connect(function(deltaTime)
 		if character ~= player.Character or humanoid.Health <= 0 or not antiVoidEnabled then
@@ -345,74 +321,41 @@ local function connectAntiVoidCharacter(character)
 
 		if grounded then
 			antiVoidAirborneTime = 0
-			antiVoidUnsupportedFallTime = 0
-			antiVoidRaycastAccumulator = ANTIVOID_RAYCAST_INTERVAL
 			antiVoidEdgeBlocked = false
-
-			local now = os.clock()
-			if not antiVoidSafeCandidateCFrame then
-				antiVoidSafeCandidateCFrame = root.CFrame
-				antiVoidSafeCandidateAt = now
-			elseif now - antiVoidSafeCandidateAt >= ANTIVOID_SAFE_POSITION_DELAY then
-				antiVoidLastSafeCFrame = antiVoidSafeCandidateCFrame
-				antiVoidSafeCandidateCFrame = root.CFrame
-				antiVoidSafeCandidateAt = now
-			end
+			antiVoidLastSafeCFrame = root.CFrame
 			return
 		end
 
 		antiVoidAirborneTime += deltaTime
 
 		local velocity = root.AssemblyLinearVelocity
-		local jumpProtected = os.clock() < antiVoidJumpGraceUntil
-		local nearDestroyHeight =
-			root.Position.Y < workspace.FallenPartsDestroyHeight + 100
-
-		-- Ascending jumps do not need a ground query, unless the character is
-		-- already dangerously close to the destroy height.
-		if velocity.Y > 0 and not nearDestroyHeight then
-			antiVoidUnsupportedFallTime = 0
-			antiVoidRaycastAccumulator = ANTIVOID_RAYCAST_INTERVAL
-			return
-		end
-
-		if velocity.Y <= 0 then
-			antiVoidUnsupportedFallTime += deltaTime
-		else
-			antiVoidUnsupportedFallTime = 0
-		end
-
-		antiVoidRaycastAccumulator += deltaTime
-		if antiVoidRaycastAccumulator < ANTIVOID_RAYCAST_INTERVAL
-			and not nearDestroyHeight then
-			return
-		end
-		antiVoidRaycastAccumulator = 0
-
 		local horizontalVelocity = Vector3.new(velocity.X, 0, velocity.Z)
 		local predictedPosition =
 			root.Position + horizontalVelocity * ANTIVOID_LANDING_PREDICTION_TIME
 
 		local predictedGround = findAntiVoidGround(
+			character,
 			root,
 			predictedPosition,
-			ANTIVOID_LANDING_DEPTH,
-			antiVoidRaycastParams
+			ANTIVOID_LANDING_DEPTH
 		)
 
 		if predictedGround then
 			antiVoidEdgeBlocked = false
-			antiVoidUnsupportedFallTime = 0
 			return
 		end
 
+		local jumpProtected = os.clock() < antiVoidJumpGraceUntil
 		local falling = velocity.Y <= 0
+		local nearDestroyHeight =
+			root.Position.Y < workspace.FallenPartsDestroyHeight + 100
+
+		if jumpProtected or velocity.Y > 0 then
+			return
+		end
 
 		local shouldTeleport =
-			(falling
-				and antiVoidAirborneTime >= ANTIVOID_AIR_RECOVERY_DELAY
-				and (not jumpProtected
-					or antiVoidUnsupportedFallTime >= ANTIVOID_UNSUPPORTED_FALL_LIMIT))
+			(falling and antiVoidAirborneTime >= ANTIVOID_AIR_RECOVERY_DELAY)
 			or nearDestroyHeight
 
 		if shouldTeleport and antiVoidLastSafeCFrame then
@@ -423,10 +366,7 @@ local function connectAntiVoidCharacter(character)
 
 			teleportToAntiVoidSafePosition(root)
 			antiVoidAirborneTime = 0
-			antiVoidUnsupportedFallTime = 0
 			antiVoidJumpGraceUntil = 0
-			antiVoidSafeCandidateCFrame = antiVoidLastSafeCFrame
-			antiVoidSafeCandidateAt = os.clock()
 		end
 	end)
 end
@@ -444,9 +384,7 @@ local antiVoidJumpConnection = UserInputService.JumpRequest:Connect(function()
 		and root
 		and root:IsA("BasePart")
 		and humanoid.FloorMaterial ~= Enum.Material.Air then
-		if not antiVoidLastSafeCFrame then
-			antiVoidLastSafeCFrame = root.CFrame
-		end
+		antiVoidLastSafeCFrame = root.CFrame
 		antiVoidJumpGraceUntil = os.clock() + ANTIVOID_JUMP_GRACE_TIME
 		antiVoidEdgeBlocked = false
 	end
@@ -515,21 +453,11 @@ local function isEnemy(candidate)
 	return true
 end
 
-local lineOfSightParamsByCharacter = setmetatable({}, {
-	__mode = "k"
-})
-
 local function hasLineOfSight(ownCharacter, targetCharacter, origin, destination)
-	local params = lineOfSightParamsByCharacter[ownCharacter]
-
-	if not params then
-		params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		params.FilterDescendantsInstances = { ownCharacter }
-		params.IgnoreWater = true
-		lineOfSightParamsByCharacter[ownCharacter] = params
-	end
-
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { ownCharacter }
+	params.IgnoreWater = true
 	local result = workspace:Raycast(origin, destination - origin, params)
 	return result == nil or result.Instance:IsDescendantOf(targetCharacter)
 end
@@ -1273,20 +1201,22 @@ local mainHeartbeatConnection = RunService.Heartbeat:Connect(function()
 	end
 
 	-- Bridge placement has its own interval and does not suppress combat.
-	if bridgeEnabled
-		and now - lastAutoBridge >= AUTO_BRIDGE_INTERVAL
-		and needsBridgePlacement() then
-		lastAutoBridge = now
-		runAutoBridge()
+	if bridgeEnabled and needsBridgePlacement() then
+		if now - lastAutoBridge >= AUTO_BRIDGE_INTERVAL then
+			lastAutoBridge = now
+			runAutoBridge()
+		end
 	end
 
-	if bowEnabled and now - lastBowShot >= BOW_COOLDOWN then
+	if bowEnabled then
 		local target, root = findNearestTarget(bowRange)
 		if target and root then
 			local bow, config = getBow()
 			if bow and config then
-				lastBowShot = now
-				fireBow(target, root, bow, config)
+				if now - lastBowShot >= BOW_COOLDOWN then
+					lastBowShot = now
+					fireBow(target, root, bow, config)
+				end
 			end
 		end
 	end
@@ -1428,8 +1358,6 @@ function Controller:SetAntiVoidEnabled(enabled)
 
 			if root and root:IsA("BasePart") then
 				antiVoidLastSafeCFrame = root.CFrame
-				antiVoidSafeCandidateCFrame = root.CFrame
-				antiVoidSafeCandidateAt = os.clock()
 			end
 		end
 	end)
