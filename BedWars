@@ -5,7 +5,7 @@
     controls, while this module exposes state through a controller table.
 ]]
 
-local SCRIPT_VERSION = "0.1.0"
+local SCRIPT_VERSION = "0.1.2"
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -141,6 +141,14 @@ local BRIDGE_PROBE_DISTANCE = 3
 local BRIDGE_PROBE_DEPTH = 7
 local BED_BREAK_INTERVAL = 0.15
 local BED_DEFENSE_RADIUS = 18
+local ANTI_KNOCKBACK_REFRESH_INTERVAL = 1
+local ANTIVOID_FOOTPRINT_SIDE_OFFSET = 1.25
+local ANTIVOID_FOOTPRINT_FRONT_OFFSET = 0.8
+local ANTIVOID_MINIMUM_GROUND_NORMAL = 0.45
+local ANTIVOID_AIR_RECOVERY_DELAY = 0.025
+local ANTIVOID_JUMP_GRACE_TIME = 0.9
+local ANTIVOID_LANDING_PREDICTION_TIME = 0.35
+local ANTIVOID_LANDING_DEPTH = 24
 
 local swordEnabled = false
 local bowEnabled = false
@@ -148,9 +156,245 @@ local sprintEnabled = false
 local bridgeEnabled = false
 local bedBreakEnabled = false
 local visualsEnabled = false
+local antiKnockbackEnabled = false
+local antiVoidEnabled = false
+local antiVoidTeleportCount = 0
+local antiVoidAirborneTime = 0
+local antiVoidEdgeBlocked = false
+local antiVoidJumpGraceUntil = 0
+local antiVoidLastSafeCFrame = nil
+local antiVoidCharacterConnection = nil
+local antiVoidCharacterGeneration = 0
 local Destroyed = false
 
 local ChangedBindable = Instance.new("BindableEvent")
+local hookedKnockbackCallbacks = {}
+
+local function getKnockbackEvent()
+	local zapFolder = ReplicatedStorage:FindFirstChild("ZAP")
+	return zapFolder and zapFolder:FindFirstChild("ZAP_RELIABLE")
+end
+
+local function refreshAntiKnockbackHooks()
+	if not antiKnockbackEnabled
+		or type(getconnections) ~= "function"
+		or type(hookfunction) ~= "function" then
+		return 0
+	end
+
+	local event = getKnockbackEvent()
+	if not event or not event:IsA("RemoteEvent") then
+		return 0
+	end
+
+	local success, connections = pcall(getconnections, event.OnClientEvent)
+	if not success or type(connections) ~= "table" then
+		return 0
+	end
+
+	local hookedCount = 0
+	for _, connection in ipairs(connections) do
+		local callbackSuccess, callback = pcall(function()
+			return connection.Function
+		end)
+
+		if callbackSuccess
+			and typeof(callback) == "function"
+			and not hookedKnockbackCallbacks[callback] then
+			local old
+			local hookSuccess = pcall(function()
+				old = hookfunction(callback, function(...)
+					if antiKnockbackEnabled then
+						return nil
+					end
+
+					return old(...)
+				end)
+			end)
+
+			if hookSuccess and typeof(old) == "function" then
+				hookedKnockbackCallbacks[callback] = true
+				hookedCount += 1
+			end
+		end
+	end
+
+	return hookedCount
+end
+
+local function restoreAntiKnockbackHooks()
+	antiKnockbackEnabled = false
+
+	for callback in pairs(hookedKnockbackCallbacks) do
+		if type(restorefunction) == "function" then
+			pcall(restorefunction, callback)
+		end
+
+		hookedKnockbackCallbacks[callback] = nil
+	end
+end
+
+local function findAntiVoidGround(character, root, targetPosition, depth)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character }
+	params.IgnoreWater = false
+	params.RespectCanCollide = true
+
+	local right = Vector3.new(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z)
+	local forward = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+
+	right = right.Magnitude > 0.01 and right.Unit or Vector3.new(1, 0, 0)
+	forward = forward.Magnitude > 0.01 and forward.Unit or Vector3.new(0, 0, -1)
+
+	local origins = {
+		targetPosition,
+		targetPosition + right * ANTIVOID_FOOTPRINT_SIDE_OFFSET,
+		targetPosition - right * ANTIVOID_FOOTPRINT_SIDE_OFFSET,
+		targetPosition + forward * ANTIVOID_FOOTPRINT_FRONT_OFFSET,
+		targetPosition - forward * ANTIVOID_FOOTPRINT_FRONT_OFFSET
+	}
+
+	local closest = nil
+
+	for _, origin in ipairs(origins) do
+		local result = workspace:Raycast(
+			origin + Vector3.new(0, 2, 0),
+			Vector3.new(0, -depth, 0),
+			params
+		)
+
+		if result and result.Normal.Y >= ANTIVOID_MINIMUM_GROUND_NORMAL then
+			if not closest or result.Distance < closest.Distance then
+				closest = result
+			end
+		end
+	end
+
+	return closest
+end
+
+local function teleportToAntiVoidSafePosition(root)
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	if antiVoidLastSafeCFrame then
+		root.CFrame = antiVoidLastSafeCFrame
+	end
+end
+
+local function resetAntiVoidState()
+	antiVoidAirborneTime = 0
+	antiVoidEdgeBlocked = false
+	antiVoidJumpGraceUntil = 0
+end
+
+local function connectAntiVoidCharacter(character)
+	antiVoidCharacterGeneration += 1
+	local generation = antiVoidCharacterGeneration
+
+	local humanoid = character:WaitForChild("Humanoid")
+	local root = character:WaitForChild("HumanoidRootPart")
+
+	if Destroyed
+		or generation ~= antiVoidCharacterGeneration
+		or character ~= player.Character
+		or not humanoid:IsA("Humanoid")
+		or not root:IsA("BasePart") then
+		return
+	end
+
+	if antiVoidCharacterConnection then
+		antiVoidCharacterConnection:Disconnect()
+		antiVoidCharacterConnection = nil
+	end
+
+	antiVoidLastSafeCFrame = root.CFrame
+	resetAntiVoidState()
+
+	antiVoidCharacterConnection = RunService.PreSimulation:Connect(function(deltaTime)
+		if character ~= player.Character or humanoid.Health <= 0 or not antiVoidEnabled then
+			return
+		end
+
+		local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
+
+		if grounded then
+			antiVoidAirborneTime = 0
+			antiVoidEdgeBlocked = false
+			antiVoidLastSafeCFrame = root.CFrame
+			return
+		end
+
+		antiVoidAirborneTime += deltaTime
+
+		local velocity = root.AssemblyLinearVelocity
+		local horizontalVelocity = Vector3.new(velocity.X, 0, velocity.Z)
+		local predictedPosition =
+			root.Position + horizontalVelocity * ANTIVOID_LANDING_PREDICTION_TIME
+
+		local predictedGround = findAntiVoidGround(
+			character,
+			root,
+			predictedPosition,
+			ANTIVOID_LANDING_DEPTH
+		)
+
+		if predictedGround then
+			antiVoidEdgeBlocked = false
+			return
+		end
+
+		local jumpProtected = os.clock() < antiVoidJumpGraceUntil
+		local falling = velocity.Y <= 0
+		local nearDestroyHeight =
+			root.Position.Y < workspace.FallenPartsDestroyHeight + 100
+
+		if jumpProtected or velocity.Y > 0 then
+			return
+		end
+
+		local shouldTeleport =
+			(falling and antiVoidAirborneTime >= ANTIVOID_AIR_RECOVERY_DELAY)
+			or nearDestroyHeight
+
+		if shouldTeleport and antiVoidLastSafeCFrame then
+			if not antiVoidEdgeBlocked then
+				antiVoidEdgeBlocked = true
+				antiVoidTeleportCount += 1
+			end
+
+			teleportToAntiVoidSafePosition(root)
+			antiVoidAirborneTime = 0
+			antiVoidJumpGraceUntil = 0
+		end
+	end)
+end
+
+local antiVoidJumpConnection = UserInputService.JumpRequest:Connect(function()
+	if not antiVoidEnabled then
+		return
+	end
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+
+	if humanoid
+		and root
+		and root:IsA("BasePart")
+		and humanoid.FloorMaterial ~= Enum.Material.Air then
+		antiVoidLastSafeCFrame = root.CFrame
+		antiVoidJumpGraceUntil = os.clock() + ANTIVOID_JUMP_GRACE_TIME
+		antiVoidEdgeBlocked = false
+	end
+end)
+
+local antiVoidCharacterAddedConnection = player.CharacterAdded:Connect(connectAntiVoidCharacter)
+
+if player.Character then
+	task.spawn(connectAntiVoidCharacter, player.Character)
+end
 
 local function getSprintController()
 	local controllers = knitClient and knitClient.Controllers
@@ -917,9 +1161,15 @@ local lastHighlightRefresh = -math.huge
 local lastSprintRefresh = -math.huge
 local lastAutoBridge = -math.huge
 local lastBedDamage = -math.huge
+local lastAntiKnockbackRefresh = -math.huge
 
 local mainHeartbeatConnection = RunService.Heartbeat:Connect(function()
 	local now = workspace:GetServerTimeNow()
+	if antiKnockbackEnabled
+		and now - lastAntiKnockbackRefresh >= ANTI_KNOCKBACK_REFRESH_INTERVAL then
+		lastAntiKnockbackRefresh = now
+		refreshAntiKnockbackHooks()
+	end
 	if sprintEnabled and now - lastSprintRefresh >= SPRINT_REFRESH_INTERVAL then
 		lastSprintRefresh = now
 		startAutoSprint()
@@ -1001,6 +1251,9 @@ function Controller:GetState()
 		BridgeEnabled = bridgeEnabled,
 		BedBreakEnabled = bedBreakEnabled,
 		VisualsEnabled = visualsEnabled,
+		AntiKnockbackEnabled = antiKnockbackEnabled,
+		AntiVoidEnabled = antiVoidEnabled,
+		AntiVoidTeleportCount = antiVoidTeleportCount,
 		BowRange = bowRange,
 		Destroyed = Destroyed,
 		Version = SCRIPT_VERSION
@@ -1065,6 +1318,51 @@ function Controller:SetVisualsEnabled(enabled)
 	end)
 end
 
+function Controller:SetAntiKnockbackEnabled(enabled)
+	if Destroyed then
+		return false, "Controller has been destroyed."
+	end
+
+	enabled = enabled == true
+
+	if enabled and (type(getconnections) ~= "function"
+		or type(hookfunction) ~= "function"
+		or type(restorefunction) ~= "function") then
+		return false, "Anti Knockback is not supported by this executor."
+	end
+
+	if antiKnockbackEnabled ~= enabled then
+		antiKnockbackEnabled = enabled
+
+		if enabled then
+			lastAntiKnockbackRefresh = workspace:GetServerTimeNow()
+			refreshAntiKnockbackHooks()
+		else
+			restoreAntiKnockbackHooks()
+		end
+
+		queueChanged()
+	end
+
+	return true, self:GetState()
+end
+
+function Controller:SetAntiVoidEnabled(enabled)
+	return setBoolean(antiVoidEnabled, enabled, function(value)
+		antiVoidEnabled = value
+		resetAntiVoidState()
+
+		if value then
+			local character = player.Character
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+
+			if root and root:IsA("BasePart") then
+				antiVoidLastSafeCFrame = root.CFrame
+			end
+		end
+	end)
+end
+
 function Controller:SetBowRange(value)
 	if Destroyed then
 		return false, "Controller has been destroyed."
@@ -1093,7 +1391,9 @@ function Controller:SetFeature(featureName, enabled)
 		Sprint = self.SetSprintEnabled,
 		Bridge = self.SetBridgeEnabled,
 		BedBreak = self.SetBedBreakEnabled,
-		Visuals = self.SetVisualsEnabled
+		Visuals = self.SetVisualsEnabled,
+		AntiKnockback = self.SetAntiKnockbackEnabled,
+		AntiVoid = self.SetAntiVoidEnabled
 	}
 
 	local setter = setters[tostring(featureName)]
@@ -1116,16 +1416,22 @@ function Controller:Destroy()
 	bridgeEnabled = false
 	bedBreakEnabled = false
 	visualsEnabled = false
+	antiVoidEnabled = false
+	antiVoidCharacterGeneration += 1
+	restoreAntiKnockbackHooks()
 
 	stopAutoSprint()
 	updatePlayerHighlights()
 
-	for _, connection in ipairs({
+	for _, connection in pairs({
 		characterAddedConnection,
 		inputBeganConnection,
 		inputChangedConnection,
 		descendantAddedConnection,
 		descendantRemovingConnection,
+		antiVoidJumpConnection,
+		antiVoidCharacterAddedConnection,
+		antiVoidCharacterConnection,
 		mainHeartbeatConnection
 	}) do
 		if connection then
